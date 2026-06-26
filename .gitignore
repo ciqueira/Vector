@@ -1,0 +1,8 @@
+*.o
+*.obj
+*.ofx
+*.lib
+*.exp
+*.ofx.bundle/
+.DS_Store
+._*
