@@ -36,7 +36,7 @@
 #define kPluginDescription                                                     \
   "Parallel RGB curves saturation and split tone processor. The Input Space "  \
   "control is used only as a split-tone pivot preset."
-#define kPluginIdentifier "com.mcofx.mcvector"
+#define kPluginIdentifier "com.MCVector"
 #define kPluginVersionMajor 1
 #define kPluginVersionMinor 0
 
