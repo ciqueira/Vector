@@ -52,6 +52,12 @@
 #define kParamSatGlobal "satGlobal"
 #define kParamSatLumMask "satLumMask"
 #define kParamShowSatCurve "showSatCurve"
+#define kParamEnableZoneSaturation "enableZoneSaturation"
+#define kParamZone "zone"
+#define kParamZonePivot "zonePivot"
+#define kParamZonePivotWidth "zonePivotWidth"
+#define kParamZoneStrengthSat "zoneStrengthSat"
+#define kParamShowZoneCurve "showZoneCurve"
 #define kParamEnableSplitTone "enableSplitTone"
 #define kParamSplitShadow "splitShadow"
 #define kParamShadowMix "shadowMix"
@@ -173,8 +179,9 @@ public:
                         srcRow[x * 4 + 2]);
 
         float3 out = applyVector(in, _params);
-        out = drawSatCurve(out, imageX, imageY, width, height, _params);
         out = drawToneCurve(out, imageX, imageY, width, height, _params);
+        out = drawSatCurve(out, imageX, imageY, width, height, _params);
+        out = drawZoneCurve(out, imageX, imageY, width, height, _params);
 
         dstRow[x * 4 + 0] = out.x;
         dstRow[x * 4 + 1] = out.y;
@@ -216,6 +223,12 @@ private:
   OFX::DoubleParam *m_SatGlobal;
   OFX::DoubleParam *m_SatLumMask;
   OFX::BooleanParam *m_ShowSatCurve;
+  OFX::BooleanParam *m_EnableZoneSaturation;
+  OFX::DoubleParam *m_Zone;
+  OFX::DoubleParam *m_ZonePivot;
+  OFX::DoubleParam *m_ZonePivotWidth;
+  OFX::DoubleParam *m_ZoneStrengthSat;
+  OFX::BooleanParam *m_ShowZoneCurve;
   OFX::BooleanParam *m_EnableSplitTone;
   OFX::DoubleParam *m_SplitShadow;
   OFX::DoubleParam *m_ShadowMix;
@@ -246,6 +259,12 @@ MCVectorPlugin::MCVectorPlugin(OfxImageEffectHandle handle)
   m_SatGlobal = fetchDoubleParam(kParamSatGlobal);
   m_SatLumMask = fetchDoubleParam(kParamSatLumMask);
   m_ShowSatCurve = fetchBooleanParam(kParamShowSatCurve);
+  m_EnableZoneSaturation = fetchBooleanParam(kParamEnableZoneSaturation);
+  m_Zone = fetchDoubleParam(kParamZone);
+  m_ZonePivot = fetchDoubleParam(kParamZonePivot);
+  m_ZonePivotWidth = fetchDoubleParam(kParamZonePivotWidth);
+  m_ZoneStrengthSat = fetchDoubleParam(kParamZoneStrengthSat);
+  m_ShowZoneCurve = fetchBooleanParam(kParamShowZoneCurve);
   m_EnableSplitTone = fetchBooleanParam(kParamEnableSplitTone);
   m_SplitShadow = fetchDoubleParam(kParamSplitShadow);
   m_ShadowMix = fetchDoubleParam(kParamShadowMix);
@@ -271,15 +290,23 @@ MCVectorParams MCVectorPlugin::getActiveParams(double time) {
   m_PivotPreset->getValueAtTime(time, pivotPreset);
   p.pivotPreset = pivotPreset;
   p.enableSaturation = m_EnableSaturation->getValueAtTime(time) ? 1 : 0;
+  p.enableZoneSaturation =
+      m_EnableZoneSaturation->getValueAtTime(time) ? 1 : 0;
   p.enableSplitTone = m_EnableSplitTone->getValueAtTime(time) ? 1 : 0;
   p.showSatCurve = m_ShowSatCurve->getValueAtTime(time) ? 1 : 0;
   p.showToneCurve = m_ShowToneCurve->getValueAtTime(time) ? 1 : 0;
+  p.showZoneCurve = m_ShowZoneCurve->getValueAtTime(time) ? 1 : 0;
 
   p.satLow = static_cast<float>(m_SatLow->getValueAtTime(time));
   p.satMid = static_cast<float>(m_SatMid->getValueAtTime(time));
   p.satHigh = static_cast<float>(m_SatHigh->getValueAtTime(time));
   p.satGlobal = static_cast<float>(m_SatGlobal->getValueAtTime(time));
   p.satLumMask = static_cast<float>(m_SatLumMask->getValueAtTime(time));
+  p.zoneShadowSaturation = static_cast<float>(m_Zone->getValueAtTime(time));
+  p.zoneHighlightSaturation =
+      static_cast<float>(m_ZoneStrengthSat->getValueAtTime(time));
+  p.zonePivot = static_cast<float>(m_ZonePivot->getValueAtTime(time));
+  p.zoneSoftness = static_cast<float>(m_ZonePivotWidth->getValueAtTime(time));
 
   p.splitShadow = static_cast<float>(m_SplitShadow->getValueAtTime(time));
   p.shadowMix = static_cast<float>(m_ShadowMix->getValueAtTime(time));
@@ -331,13 +358,17 @@ bool MCVectorPlugin::isIdentity(const OFX::IsIdentityArguments &args,
       !p.enableSaturation ||
       (p.satLow == 1.0f && p.satMid == 1.0f && p.satHigh == 1.0f &&
        p.satGlobal == 1.0f);
+  const bool zoneSatIdentity =
+      !p.enableZoneSaturation ||
+      p.zoneHighlightSaturation == 0.0f;
   const bool splitIdentity =
       !p.enableSplitTone ||
       (p.splitShadow == 0.0f && p.splitHighlight == 0.0f);
   const bool noOverlays =
       !(p.enableSaturation && p.showSatCurve) &&
-      !(p.enableSplitTone && p.showToneCurve);
-  if (satIdentity && splitIdentity && noOverlays) {
+      !(p.enableSplitTone && p.showToneCurve) &&
+      !(p.enableZoneSaturation && p.showZoneCurve);
+  if (satIdentity && zoneSatIdentity && splitIdentity && noOverlays) {
     identityClip = m_SrcClip;
     identityTime = args.time;
     return true;
@@ -439,40 +470,6 @@ void MCVectorFactory::describeInContext(OFX::ImageEffectDescriptor &desc,
   page->addChild(*pivotPreset);
 
   {
-    OFX::GroupParamDescriptor *grp = desc.defineGroupParam("grpSaturation");
-    grp->setLabels("Curves Saturation", "Curves Saturation",
-                   "Curves Saturation");
-    grp->setOpen(true);
-    page->addChild(*grp);
-
-    OFX::BooleanParamDescriptor *enable =
-        desc.defineBooleanParam(kParamEnableSaturation);
-    enable->setLabels("Enable Sat", "Enable Sat", "Enable Sat");
-    enable->setDefault(true);
-    enable->setParent(*grp);
-    page->addChild(*enable);
-
-    defineDouble(desc, kParamSatLow, "Low Sat", 1.0, 0.0, 2.0, 0.0, 2.0,
-                 *grp, *page);
-    defineDouble(desc, kParamSatMid, "Mid Sat", 1.0, 0.0, 2.0, 0.0, 2.0,
-                 *grp, *page);
-    defineDouble(desc, kParamSatHigh, "Hi Sat", 1.0, 0.0, 2.0, 0.0, 2.0,
-                 *grp, *page);
-    defineDouble(desc, kParamSatGlobal, "Global Sat", 1.0, 0.0, 2.0, 0.0,
-                 2.0, *grp, *page);
-    defineDouble(desc, kParamSatLumMask, "Luma Mask", 1.0, 0.0, 1.0, 0.0,
-                 1.0, *grp, *page);
-
-    OFX::BooleanParamDescriptor *showCurve =
-        desc.defineBooleanParam(kParamShowSatCurve);
-    showCurve->setLabels("Show Sat Curve", "Show Sat Curve",
-                         "Show Sat Curve");
-    showCurve->setDefault(false);
-    showCurve->setParent(*grp);
-    page->addChild(*showCurve);
-  }
-
-  {
     OFX::GroupParamDescriptor *grp = desc.defineGroupParam("grpSplitTone");
     grp->setLabels("Split Tone", "Split Tone", "Split Tone");
     grp->setOpen(true);
@@ -508,13 +505,82 @@ void MCVectorFactory::describeInContext(OFX::ImageEffectDescriptor &desc,
     defineDouble(desc, kParamShadowRedBellyCenter, "Shadow Red Belly Center",
                  0.0, -1.0, 1.0, -1.0, 1.0, *grp, *page);
     defineDouble(desc, kParamShadowGreenBellyCenter,
-                 "Shadow Green Belly Center", 0.0, -1.0, 1.0, -1.0, 1.0, *grp, *page);
+                 "Shadow Green Belly Center", 0.0, -1.0, 1.0, -1.0, 1.0,
+                 *grp, *page);
     defineDouble(desc, kParamShadowBlueBellyCenter, "Shadow Blue Belly Center",
                  0.0, -1.0, 1.0, -1.0, 1.0, *grp, *page);
 
     OFX::BooleanParamDescriptor *showCurve =
         desc.defineBooleanParam(kParamShowToneCurve);
-    showCurve->setLabels("Show Split Curve", "Show Split Curve", "Show Split Curve");
+    showCurve->setLabels("Show Split Curve", "Show Split Curve",
+                         "Show Split Curve");
+    showCurve->setDefault(false);
+    showCurve->setParent(*grp);
+    page->addChild(*showCurve);
+  }
+
+  {
+    OFX::GroupParamDescriptor *grp = desc.defineGroupParam("grpSaturation");
+    grp->setLabels("Curves Saturation", "Curves Saturation",
+                   "Curves Saturation");
+    grp->setOpen(true);
+    page->addChild(*grp);
+
+    OFX::BooleanParamDescriptor *enable =
+        desc.defineBooleanParam(kParamEnableSaturation);
+    enable->setLabels("Enable Sat", "Enable Sat", "Enable Sat");
+    enable->setDefault(true);
+    enable->setParent(*grp);
+    page->addChild(*enable);
+
+    defineDouble(desc, kParamSatLow, "Low Sat", 1.0, 0.0, 2.0, 0.0, 2.0,
+                 *grp, *page);
+    defineDouble(desc, kParamSatMid, "Mid Sat", 1.0, 0.0, 2.0, 0.0, 2.0,
+                 *grp, *page);
+    defineDouble(desc, kParamSatHigh, "Hi Sat", 1.0, 0.0, 2.0, 0.0, 2.0,
+                 *grp, *page);
+    defineDouble(desc, kParamSatGlobal, "Global Sat", 1.0, 0.0, 2.0, 0.0,
+                 2.0, *grp, *page);
+    defineDouble(desc, kParamSatLumMask, "Luma Mask", 1.0, 0.0, 1.0, 0.0,
+                 1.0, *grp, *page);
+
+    OFX::BooleanParamDescriptor *showCurve =
+        desc.defineBooleanParam(kParamShowSatCurve);
+    showCurve->setLabels("Show Sat Curve", "Show Sat Curve",
+                         "Show Sat Curve");
+    showCurve->setDefault(false);
+    showCurve->setParent(*grp);
+    page->addChild(*showCurve);
+  }
+
+  {
+    OFX::GroupParamDescriptor *grp =
+        desc.defineGroupParam("grpZoneSaturation");
+    grp->setLabels("Zone Saturation", "Zone Saturation", "Zone Saturation");
+    grp->setOpen(false);
+    page->addChild(*grp);
+
+    OFX::BooleanParamDescriptor *enable =
+        desc.defineBooleanParam(kParamEnableZoneSaturation);
+    enable->setLabels("Enable Zone Sat", "Enable Zone Sat",
+                      "Enable Zone Sat");
+    enable->setDefault(false);
+    enable->setParent(*grp);
+    page->addChild(*enable);
+
+    defineDouble(desc, kParamZone, "Zone", 0.0, -1.0, 1.0, -1.0, 1.0, *grp,
+                 *page);
+    defineDouble(desc, kParamZonePivot, "Pivot", 0.5, 0.0, 1.0, 0.0, 1.0,
+                 *grp, *page);
+    defineDouble(desc, kParamZonePivotWidth, "Pivot Width", 0.5, 0.0, 1.0,
+                 0.0, 1.0, *grp, *page);
+    defineDouble(desc, kParamZoneStrengthSat, "Strength Sat", 0.0, -1.0, 1.0,
+                 -1.0, 1.0, *grp, *page);
+
+    OFX::BooleanParamDescriptor *showCurve =
+        desc.defineBooleanParam(kParamShowZoneCurve);
+    showCurve->setLabels("Show Zone Curve", "Show Zone Curve",
+                         "Show Zone Curve");
     showCurve->setDefault(false);
     showCurve->setParent(*grp);
     page->addChild(*showCurve);

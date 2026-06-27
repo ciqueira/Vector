@@ -90,6 +90,39 @@ inline float3 applyCurvesSaturation(float3 in, const MCVectorParams &p) {
   return applyRgbDirectSat(in, satMult);
 }
 
+inline float zoneToneValue(float3 rgb) {
+  const float tone = std::max(rgb.x, std::max(rgb.y, rgb.z));
+  return std::pow(clampf(tone, 0.0f, 1.0f), 0.4101205819200422f);
+}
+
+inline float zoneMask(float x, float pivot, float softness, bool highlights) {
+  const float width = mixf(0.015f, 0.35f, clampf(softness, 0.0f, 1.0f));
+  float arg = (x - pivot) / width;
+  if (highlights) {
+    arg = -arg;
+  }
+  arg = clampf(arg, -60.0f, 60.0f);
+  return 1.0f / (1.0f + std::exp(arg));
+}
+
+inline float zoneSatMultiplier(float x, const MCVectorParams &p) {
+  const float pivot =
+      std::pow(clampf(p.zonePivot, 0.0f, 1.0f), 0.4101205819200422f);
+  const float zone = clampf(p.zoneShadowSaturation, -1.0f, 1.0f);
+  const float strength = clampf(p.zoneHighlightSaturation, -1.0f, 1.0f);
+  const float shadows = zoneMask(x, pivot, p.zoneSoftness, false);
+  const float highlights = zoneMask(x, pivot, p.zoneSoftness, true);
+  const float shadowFocus = zone <= 0.0f ? 1.0f : 1.0f - zone;
+  const float highlightFocus = zone >= 0.0f ? 1.0f : 1.0f + zone;
+  return std::max(0.0f, 1.0f + strength * highlights * highlightFocus -
+                            strength * shadows * shadowFocus);
+}
+
+inline float3 applyZoneSaturation(float3 in, const MCVectorParams &p) {
+  const float x = zoneToneValue(in);
+  return applyRgbDirectSat(in, zoneSatMultiplier(x, p));
+}
+
 inline float splitCurveOffset(float curveBias) {
   return clampf(curveBias, -1.0f, 1.0f) * 0.25f;
 }
@@ -303,11 +336,16 @@ inline float3 applySplitTone(float3 in, const MCVectorParams &p) {
 }
 
 inline float3 applyVector(float3 in, const MCVectorParams &p) {
-  const float3 sat = p.enableSaturation ? applyCurvesSaturation(in, p) : in;
   const float3 split = p.enableSplitTone ? applySplitTone(in, p) : in;
-  return make_float3(in.x + (sat.x - in.x) + (split.x - in.x),
-                     in.y + (sat.y - in.y) + (split.y - in.y),
-                     in.z + (sat.z - in.z) + (split.z - in.z));
+  const float3 sat = p.enableSaturation ? applyCurvesSaturation(in, p) : in;
+  const float3 zone =
+      p.enableZoneSaturation ? applyZoneSaturation(in, p) : in;
+  return make_float3(in.x + (split.x - in.x) + (sat.x - in.x) +
+                         (zone.x - in.x),
+                     in.y + (split.y - in.y) + (sat.y - in.y) +
+                         (zone.y - in.y),
+                     in.z + (split.z - in.z) + (sat.z - in.z) +
+                         (zone.z - in.z));
 }
 
 inline float3 normalizePatchDelta(float3 delta) {
@@ -489,6 +527,37 @@ inline float3 drawSatCurve(float3 out, int x, int y, int width, int height,
   out = overlayRgbLine(out, baseCurve - spacing, yf,
                        make_float3(0.0f, 0.0f, 1.0f), halfThickness, falloff);
   return out;
+}
+
+inline float3 drawZoneCurve(float3 out, int x, int y, int width, int height,
+                            const MCVectorParams &p) {
+  if (!p.enableZoneSaturation || !p.showZoneCurve || width <= 0 ||
+      height <= 0) {
+    return out;
+  }
+
+  const float xf = static_cast<float>(x) / static_cast<float>(width);
+  const float yf = static_cast<float>(y) / static_cast<float>(height);
+  const float gamma = 0.4101205819200422f;
+  const float xTone = std::pow(clampf(xf, 0.0f, 1.0f), gamma);
+  const float halfThickness = 4.0f / static_cast<float>(height);
+  const float falloff = 1.0f / static_cast<float>(height);
+
+  const float pivotX = clampf(p.zonePivot, 0.0f, 1.0f);
+  const float pivotDx = std::fabs(xf - pivotX) * static_cast<float>(width);
+  const float pivotDy = std::fabs(yf - 0.5f) * static_cast<float>(height);
+  const float pivotDot =
+      clampf(1.0f - (std::sqrt(pivotDx * pivotDx + pivotDy * pivotDy) - 3.0f) /
+                         2.0f,
+             0.0f, 1.0f);
+  out = make_float3(out.x * (1.0f - pivotDot) + 0.72f * pivotDot,
+                    out.y * (1.0f - pivotDot) + 0.72f * pivotDot,
+                    out.z * (1.0f - pivotDot) + 0.72f * pivotDot);
+
+  const float satMult = zoneSatMultiplier(xTone, p);
+  const float curve = clampf(0.5f + (satMult - 1.0f) * 0.5f, 0.0f, 1.0f);
+  return overlayRgbLine(out, curve, yf, make_float3(0.35f, 1.0f, 0.35f),
+                        halfThickness, falloff);
 }
 
 inline float3 drawToneCurve(float3 out, int x, int y, int width, int height,

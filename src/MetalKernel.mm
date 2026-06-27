@@ -18,11 +18,11 @@ using namespace metal;
 struct MCVectorParams {
   int pivotPreset;
   int enableSaturation;
+  int enableZoneSaturation;
   int enableSplitTone;
   int showSatCurve;
   int showToneCurve;
-  int _pad0;
-  int _pad1;
+  int showZoneCurve;
   int _pad2;
 
   float satLow;
@@ -30,6 +30,10 @@ struct MCVectorParams {
   float satHigh;
   float satGlobal;
   float satLumMask;
+  float zoneShadowSaturation;
+  float zoneHighlightSaturation;
+  float zonePivot;
+  float zoneSoftness;
 
   float splitShadow;
   float shadowMix;
@@ -91,6 +95,38 @@ float3 applyCurvesSaturation(float3 in, constant MCVectorParams &p) {
                   effGlobalSat;
   satMult = 1.0f + (satMult - 1.0f) * p.satLumMask;
   return applyRgbDirectSat(in, satMult);
+}
+
+float zoneToneValue(float3 rgb) {
+  float tone = max(rgb.x, max(rgb.y, rgb.z));
+  return pow(clamp(tone, 0.0f, 1.0f), 0.4101205819200422f);
+}
+
+float zoneMask(float x, float pivot, float softness, bool highlights) {
+  float width = mix(0.015f, 0.35f, clamp(softness, 0.0f, 1.0f));
+  float arg = (x - pivot) / width;
+  if (highlights) {
+    arg = -arg;
+  }
+  arg = clamp(arg, -60.0f, 60.0f);
+  return 1.0f / (1.0f + exp(arg));
+}
+
+float zoneSatMultiplier(float x, constant MCVectorParams &p) {
+  float pivot = pow(clamp(p.zonePivot, 0.0f, 1.0f), 0.4101205819200422f);
+  float zone = clamp(p.zoneShadowSaturation, -1.0f, 1.0f);
+  float strength = clamp(p.zoneHighlightSaturation, -1.0f, 1.0f);
+  float shadows = zoneMask(x, pivot, p.zoneSoftness, false);
+  float highlights = zoneMask(x, pivot, p.zoneSoftness, true);
+  float shadowFocus = zone <= 0.0f ? 1.0f : 1.0f - zone;
+  float highlightFocus = zone >= 0.0f ? 1.0f : 1.0f + zone;
+  return max(0.0f, 1.0f + strength * highlights * highlightFocus -
+                       strength * shadows * shadowFocus);
+}
+
+float3 applyZoneSaturation(float3 in, constant MCVectorParams &p) {
+  float x = zoneToneValue(in);
+  return applyRgbDirectSat(in, zoneSatMultiplier(x, p));
 }
 
 float splitCurveOffset(float curveBias) {
@@ -281,9 +317,11 @@ float3 applySplitTone(float3 in, constant MCVectorParams &p) {
 }
 
 float3 applyVector(float3 in, constant MCVectorParams &p) {
-  float3 sat = p.enableSaturation != 0 ? applyCurvesSaturation(in, p) : in;
   float3 split = p.enableSplitTone != 0 ? applySplitTone(in, p) : in;
-  return in + (sat - in) + (split - in);
+  float3 sat = p.enableSaturation != 0 ? applyCurvesSaturation(in, p) : in;
+  float3 zone =
+      p.enableZoneSaturation != 0 ? applyZoneSaturation(in, p) : in;
+  return in + (split - in) + (sat - in) + (zone - in);
 }
 
 float3 normalizePatchDelta(float3 delta) {
@@ -441,6 +479,33 @@ float3 drawSatCurve(float3 out, uint x, uint y, uint width, uint height,
   return out;
 }
 
+float3 drawZoneCurve(float3 out, uint x, uint y, uint width, uint height,
+                     constant MCVectorParams &p) {
+  if (p.enableZoneSaturation == 0 || p.showZoneCurve == 0 || width == 0 ||
+      height == 0) return out;
+
+  float xf = float(x) / float(width);
+  float yf = float(y) / float(height);
+  float gamma = 0.4101205819200422f;
+  float xTone = pow(clamp(xf, 0.0f, 1.0f), gamma);
+  float halfThickness = 4.0f / float(height);
+  float falloff = 1.0f / float(height);
+
+  float pivotX = clamp(p.zonePivot, 0.0f, 1.0f);
+  float pivotDx = abs(xf - pivotX) * float(width);
+  float pivotDy = abs(yf - 0.5f) * float(height);
+  float pivotDot = clamp(1.0f - (sqrt(pivotDx * pivotDx + pivotDy * pivotDy) -
+                                 3.0f) /
+                                    2.0f,
+                         0.0f, 1.0f);
+  out = out * (1.0f - pivotDot) + float3(0.72f) * pivotDot;
+
+  float satMult = zoneSatMultiplier(xTone, p);
+  float curve = clamp(0.5f + (satMult - 1.0f) * 0.5f, 0.0f, 1.0f);
+  return overlayRgbLine(out, curve, yf, float3(0.35f, 1.0f, 0.35f),
+                        halfThickness, falloff);
+}
+
 float3 drawToneCurve(float3 out, uint x, uint y, uint width, uint height,
                      constant MCVectorParams &p) {
   if (p.enableSplitTone == 0 || p.showToneCurve == 0 || width == 0 ||
@@ -495,8 +560,9 @@ kernel void MCVectorKernel(constant int &width [[ buffer(0) ]],
 
   float3 in = float3(input[idx + 0], input[idx + 1], input[idx + 2]);
   float3 out = applyVector(in, params);
-  out = drawSatCurve(out, id.x, id.y, uint(width), uint(height), params);
   out = drawToneCurve(out, id.x, id.y, uint(width), uint(height), params);
+  out = drawSatCurve(out, id.x, id.y, uint(width), uint(height), params);
+  out = drawZoneCurve(out, id.x, id.y, uint(width), uint(height), params);
 
   output[idx + 0] = out.x;
   output[idx + 1] = out.y;

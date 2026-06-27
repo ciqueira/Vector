@@ -8,11 +8,11 @@
 typedef struct {
   int pivotPreset; // 0=ACEScct, 1=DWG, 2=LogC3, 3=LogC4
   int enableSaturation;
+  int enableZoneSaturation;
   int enableSplitTone;
   int showSatCurve;
   int showToneCurve;
-  int _pad0;
-  int _pad1;
+  int showZoneCurve;
   int _pad2;
 
   float satLow;
@@ -20,6 +20,10 @@ typedef struct {
   float satHigh;
   float satGlobal;
   float satLumMask;
+  float zoneShadowSaturation;
+  float zoneHighlightSaturation;
+  float zonePivot;
+  float zoneSoftness;
 
   float splitShadow;
   float shadowMix;

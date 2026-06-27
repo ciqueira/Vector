@@ -86,6 +86,40 @@ __device__ inline float3 applyCurvesSaturation(float3 in,
   return applyRgbDirectSat(in, satMult);
 }
 
+__device__ inline float zoneToneValue(float3 rgb) {
+  const float tone = fmaxf(rgb.x, fmaxf(rgb.y, rgb.z));
+  return powf(clampf(tone, 0.0f, 1.0f), 0.4101205819200422f);
+}
+
+__device__ inline float zoneMask(float x, float pivot, float softness,
+                                 bool highlights) {
+  const float width = 0.015f + (0.35f - 0.015f) *
+                                   clampf(softness, 0.0f, 1.0f);
+  float arg = (x - pivot) / width;
+  if (highlights)
+    arg = -arg;
+  arg = clampf(arg, -60.0f, 60.0f);
+  return 1.0f / (1.0f + expf(arg));
+}
+
+__device__ inline float zoneSatMultiplier(float x, MCVectorParams p) {
+  const float pivot =
+      powf(clampf(p.zonePivot, 0.0f, 1.0f), 0.4101205819200422f);
+  const float zone = clampf(p.zoneShadowSaturation, -1.0f, 1.0f);
+  const float strength = clampf(p.zoneHighlightSaturation, -1.0f, 1.0f);
+  const float shadows = zoneMask(x, pivot, p.zoneSoftness, false);
+  const float highlights = zoneMask(x, pivot, p.zoneSoftness, true);
+  const float shadowFocus = zone <= 0.0f ? 1.0f : 1.0f - zone;
+  const float highlightFocus = zone >= 0.0f ? 1.0f : 1.0f + zone;
+  return fmaxf(0.0f, 1.0f + strength * highlights * highlightFocus -
+                         strength * shadows * shadowFocus);
+}
+
+__device__ inline float3 applyZoneSaturation(float3 in, MCVectorParams p) {
+  const float x = zoneToneValue(in);
+  return applyRgbDirectSat(in, zoneSatMultiplier(x, p));
+}
+
 __device__ inline float splitCurveOffset(float curveBias) {
   return clampf(curveBias, -1.0f, 1.0f) * 0.25f;
 }
@@ -290,9 +324,12 @@ __device__ inline float3 applySplitTone(float3 in, MCVectorParams p) {
 }
 
 __device__ inline float3 applyVector(float3 in, MCVectorParams p) {
-  const float3 sat = p.enableSaturation ? applyCurvesSaturation(in, p) : in;
   const float3 split = p.enableSplitTone ? applySplitTone(in, p) : in;
-  return add3(in, add3(sub3(sat, in), sub3(split, in)));
+  const float3 sat = p.enableSaturation ? applyCurvesSaturation(in, p) : in;
+  const float3 zone =
+      p.enableZoneSaturation ? applyZoneSaturation(in, p) : in;
+  return add3(in, add3(add3(sub3(split, in), sub3(sat, in)),
+                       sub3(zone, in)));
 }
 
 __device__ inline float3 normalizePatchDelta(float3 delta) {
@@ -467,6 +504,35 @@ __device__ inline float3 drawSatCurve(float3 out, int x, int y, int width,
   return out;
 }
 
+__device__ inline float3 drawZoneCurve(float3 out, int x, int y, int width,
+                                       int height, MCVectorParams p) {
+  if (!p.enableZoneSaturation || !p.showZoneCurve || width <= 0 || height <= 0)
+    return out;
+
+  const float xf = (float)x / (float)width;
+  const float yf = (float)y / (float)height;
+  const float gamma = 0.4101205819200422f;
+  const float xTone = powf(clampf(xf, 0.0f, 1.0f), gamma);
+  const float halfThickness = 4.0f / (float)height;
+  const float falloff = 1.0f / (float)height;
+
+  const float pivotX = clampf(p.zonePivot, 0.0f, 1.0f);
+  const float pivotDx = fabsf(xf - pivotX) * (float)width;
+  const float pivotDy = fabsf(yf - 0.5f) * (float)height;
+  const float pivotDot =
+      clampf(1.0f - (sqrtf(pivotDx * pivotDx + pivotDy * pivotDy) - 3.0f) /
+                         2.0f,
+             0.0f, 1.0f);
+  out = f3(out.x * (1.0f - pivotDot) + 0.72f * pivotDot,
+           out.y * (1.0f - pivotDot) + 0.72f * pivotDot,
+           out.z * (1.0f - pivotDot) + 0.72f * pivotDot);
+
+  const float satMult = zoneSatMultiplier(xTone, p);
+  const float curve = clampf(0.5f + (satMult - 1.0f) * 0.5f, 0.0f, 1.0f);
+  return overlayRgbLine(out, curve, yf, f3(0.35f, 1.0f, 0.35f),
+                        halfThickness, falloff);
+}
+
 __device__ inline float3 drawToneCurve(float3 out, int x, int y, int width,
                                        int height, MCVectorParams p) {
   if (!p.enableSplitTone || !p.showToneCurve || width <= 0 || height <= 0)
@@ -523,8 +589,9 @@ __global__ void MCVectorKernel(int width, int height, int rowBytes,
   const int idx = y * fpr + x * 4;
   const float3 in = f3(input[idx + 0], input[idx + 1], input[idx + 2]);
   float3 out = applyVector(in, params);
-  out = drawSatCurve(out, x, y, width, height, params);
   out = drawToneCurve(out, x, y, width, height, params);
+  out = drawSatCurve(out, x, y, width, height, params);
+  out = drawZoneCurve(out, x, y, width, height, params);
 
   output[idx + 0] = out.x;
   output[idx + 1] = out.y;
