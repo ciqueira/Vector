@@ -99,6 +99,66 @@ static void openMCNexusApp() {
   std::system(
       "open -a MCNexus >/dev/null 2>&1 || open \"/Applications/MCNexus.app\" "
       ">/dev/null 2>&1");
+#elif defined(_WIN32)
+  auto shellExecuteWindowsPath = [](const wchar_t *path,
+                                    const wchar_t *parameters) {
+    HINSTANCE result =
+        ShellExecuteW(nullptr, L"open", path, parameters, nullptr, SW_SHOWNORMAL);
+    return reinterpret_cast<intptr_t>(result) > 32;
+  };
+
+  auto launchWindowsExecutableIfExists = [&](const wchar_t *pathWithEnvironment) {
+    wchar_t expanded[MAX_PATH] = {};
+    const DWORD expandedLength =
+        ExpandEnvironmentStringsW(pathWithEnvironment, expanded, MAX_PATH);
+    const wchar_t *path =
+        (expandedLength > 0 && expandedLength < MAX_PATH) ? expanded
+                                                          : pathWithEnvironment;
+    const DWORD attributes = GetFileAttributesW(path);
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0u) {
+      return false;
+    }
+    return shellExecuteWindowsPath(path, nullptr);
+  };
+
+  auto launchPowerShellHidden = [](const wchar_t *parameters) {
+    std::wstring commandLine = L"powershell.exe ";
+    commandLine += parameters;
+
+    STARTUPINFOW startupInfo = {};
+    startupInfo.cb = sizeof(startupInfo);
+    startupInfo.dwFlags = STARTF_USESHOWWINDOW;
+    startupInfo.wShowWindow = SW_HIDE;
+
+    PROCESS_INFORMATION processInfo = {};
+    const BOOL created =
+        CreateProcessW(nullptr, &commandLine[0], nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &startupInfo,
+                       &processInfo);
+    if (!created) {
+      return false;
+    }
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+    return true;
+  };
+
+  if (launchWindowsExecutableIfExists(L"%ProgramFiles%\\MCNexus\\MCNexus.exe") ||
+      launchWindowsExecutableIfExists(
+          L"%ProgramFiles(x86)%\\MCNexus\\MCNexus.exe") ||
+      launchWindowsExecutableIfExists(
+          L"%LocalAppData%\\Programs\\MCNexus\\MCNexus.exe")) {
+    return;
+  }
+
+  constexpr const wchar_t *kPowerShellArgs =
+      LR"PS(-NoProfile -WindowStyle Hidden -Command "$app = Get-StartApps | Where-Object { $_.Name -eq 'MCNexus' } | Select-Object -First 1; if ($app) { Start-Process ('shell:AppsFolder\' + $app.AppID) } else { Start-Process 'https://apps.microsoft.com/detail/9n1qqt1xc825?hl=en-US&gl=US' }")PS";
+  if (launchPowerShellHidden(kPowerShellArgs)) {
+    return;
+  }
+
+  openExternalUrl("https://apps.microsoft.com/detail/9n1qqt1xc825?hl=en-US&gl=US");
 #endif
 }
 
