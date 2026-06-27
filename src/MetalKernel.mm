@@ -396,6 +396,86 @@ float3 encodePatchTransfer(float3 color, int pivotPreset) {
   return color;
 }
 
+float3 rec709LinearToXyz(float3 color) {
+  return float3(color.x * 0.41239080f + color.y * 0.35758434f +
+                    color.z * 0.18048079f,
+                color.x * 0.21263901f + color.y * 0.71516868f +
+                    color.z * 0.07219232f,
+                color.x * 0.01933082f + color.y * 0.11919478f +
+                    color.z * 0.95053215f);
+}
+
+float3 adaptXyzD65ToD60(float3 xyz) {
+  return float3(xyz.x * 1.013034914650f + xyz.y * 0.006105257823f +
+                    xyz.z * -0.014970943627f,
+                xyz.x * 0.007698230125f + xyz.y * 0.998163352118f +
+                    xyz.z * -0.005032038535f,
+                xyz.x * -0.002841317432f + xyz.y * 0.004685156723f +
+                    xyz.z * 0.924506137458f);
+}
+
+float3 xyzToInputLinearRgb(float3 xyz, int pivotPreset) {
+  if (pivotPreset == 0) {
+    return float3(xyz.x * 1.64102338f + xyz.y * -0.32480329f +
+                      xyz.z * -0.23642470f,
+                  xyz.x * -0.66366286f + xyz.y * 1.61533159f +
+                      xyz.z * 0.01675635f,
+                  xyz.x * 0.01172189f + xyz.y * -0.00828444f +
+                      xyz.z * 0.98839486f);
+  }
+  if (pivotPreset == 1) {
+    return float3(xyz.x * 1.51667204f + xyz.y * -0.28147805f +
+                      xyz.z * -0.14696363f,
+                  xyz.x * -0.46491710f + xyz.y * 1.25142378f +
+                      xyz.z * 0.17488461f,
+                  xyz.x * 0.06484905f + xyz.y * 0.10913934f +
+                      xyz.z * 0.76141462f);
+  }
+  if (pivotPreset == 2) {
+    return float3(xyz.x * 1.78906548f + xyz.y * -0.48253384f +
+                      xyz.z * -0.20007578f,
+                  xyz.x * -0.63984859f + xyz.y * 1.39639986f +
+                      xyz.z * 0.19443229f,
+                  xyz.x * -0.04153153f + xyz.y * 0.08233536f +
+                      xyz.z * 0.87886840f);
+  }
+  if (pivotPreset == 3) {
+    return float3(xyz.x * 1.50921547f + xyz.y * -0.25059735f +
+                      xyz.z * -0.16881148f,
+                  xyz.x * -0.49154545f + xyz.y * 1.36124555f +
+                      xyz.z * 0.09728294f,
+                  xyz.z * 0.91822495f);
+  }
+  return xyz;
+}
+
+float3 shapeOverlayColor(float3 color) {
+  float maxv = max(color.x, max(color.y, color.z));
+  float minv = min(color.x, min(color.y, color.z));
+  if (maxv - minv < 0.001f) return color;
+
+  float saturationBoost = 2.295f;
+  float brightnessBoost = 1.302f;
+  float whitePull = 0.636f;
+  color.x = maxv - (maxv - color.x) * saturationBoost;
+  color.y = maxv - (maxv - color.y) * saturationBoost;
+  color.z = maxv - (maxv - color.z) * saturationBoost;
+  color = min(color * brightnessBoost, float3(1.0f));
+  return color + (float3(1.0f) - color) * whitePull;
+}
+
+float3 encodeOverlayColor(float3 rec709LinearColor, int pivotPreset) {
+  if (pivotPreset < 0 || pivotPreset > 3) return rec709LinearColor;
+
+  float3 xyz = rec709LinearToXyz(rec709LinearColor);
+  if (pivotPreset == 0) {
+    xyz = adaptXyzD65ToD60(xyz);
+  }
+  return encodePatchTransfer(shapeOverlayColor(
+                                 xyzToInputLinearRgb(xyz, pivotPreset)),
+                             pivotPreset);
+}
+
 float3 getShadowPatchColor(float pivot, float colorMix, float neutralBlack,
                            float curveBias, float redBellyCenter,
                            float greenBellyCenter, float blueBellyCenter) {
@@ -469,13 +549,18 @@ float3 drawSatCurve(float3 out, uint x, uint y, uint width, uint height,
   float halfThickness = 5.0f / float(height);
   float spacing = halfThickness * 2.0f;
   float falloff = 1.0f / float(height);
+  float3 redLine = encodeOverlayColor(float3(1.0f, 0.0f, 0.0f),
+                                      p.pivotPreset);
+  float3 greenLine = encodeOverlayColor(float3(0.0f, 1.0f, 0.0f),
+                                        p.pivotPreset);
+  float3 blueLine = encodeOverlayColor(float3(0.0f, 0.0f, 1.0f),
+                                       p.pivotPreset);
 
-  out = overlayRgbLine(out, baseCurve + spacing, yf,
-                       float3(1.0f, 0.0f, 0.0f), halfThickness, falloff);
-  out = overlayRgbLine(out, baseCurve, yf, float3(0.0f, 1.0f, 0.0f),
-                       halfThickness, falloff);
-  out = overlayRgbLine(out, baseCurve - spacing, yf,
-                       float3(0.0f, 0.0f, 1.0f), halfThickness, falloff);
+  out = overlayRgbLine(out, baseCurve + spacing, yf, redLine, halfThickness,
+                       falloff);
+  out = overlayRgbLine(out, baseCurve, yf, greenLine, halfThickness, falloff);
+  out = overlayRgbLine(out, baseCurve - spacing, yf, blueLine, halfThickness,
+                       falloff);
   return out;
 }
 
@@ -488,8 +573,16 @@ float3 drawZoneCurve(float3 out, uint x, uint y, uint width, uint height,
   float yf = float(y) / float(height);
   float gamma = 0.4101205819200422f;
   float xTone = pow(clamp(xf, 0.0f, 1.0f), gamma);
-  float halfThickness = 4.0f / float(height);
+  float halfThickness = 5.0f / float(height);
+  float spacing = halfThickness * 2.0f;
   float falloff = 1.0f / float(height);
+  float3 pivotColor = encodeOverlayColor(float3(0.72f), p.pivotPreset);
+  float3 redLine = encodeOverlayColor(float3(1.0f, 0.0f, 0.0f),
+                                      p.pivotPreset);
+  float3 greenLine = encodeOverlayColor(float3(0.0f, 1.0f, 0.0f),
+                                        p.pivotPreset);
+  float3 blueLine = encodeOverlayColor(float3(0.0f, 0.0f, 1.0f),
+                                       p.pivotPreset);
 
   float pivotX = clamp(p.zonePivot, 0.0f, 1.0f);
   float pivotDx = abs(xf - pivotX) * float(width);
@@ -498,12 +591,15 @@ float3 drawZoneCurve(float3 out, uint x, uint y, uint width, uint height,
                                  3.0f) /
                                     2.0f,
                          0.0f, 1.0f);
-  out = out * (1.0f - pivotDot) + float3(0.72f) * pivotDot;
+  out = out * (1.0f - pivotDot) + pivotColor * pivotDot;
 
   float satMult = zoneSatMultiplier(xTone, p);
   float curve = clamp(0.5f + (satMult - 1.0f) * 0.5f, 0.0f, 1.0f);
-  return overlayRgbLine(out, curve, yf, float3(0.35f, 1.0f, 0.35f),
-                        halfThickness, falloff);
+  out = overlayRgbLine(out, curve + spacing, yf, redLine, halfThickness,
+                       falloff);
+  out = overlayRgbLine(out, curve, yf, greenLine, halfThickness, falloff);
+  return overlayRgbLine(out, curve - spacing, yf, blueLine, halfThickness,
+                        falloff);
 }
 
 float3 drawToneCurve(float3 out, uint x, uint y, uint width, uint height,
@@ -515,12 +611,15 @@ float3 drawToneCurve(float3 out, uint x, uint y, uint width, uint height,
   float3 ramp = applySplitTone(float3(rv), p);
   float halfThickness = 5.0f / float(height);
   float falloff = 1.0f / float(height);
-  out = overlayRgbLine(out, ramp.x, screenY, float3(1.0f, 0.0f, 0.0f),
-                       halfThickness, falloff);
-  out = overlayRgbLine(out, ramp.y, screenY, float3(0.0f, 1.0f, 0.0f),
-                       halfThickness, falloff);
-  out = overlayRgbLine(out, ramp.z, screenY, float3(0.0f, 0.0f, 1.0f),
-                       halfThickness, falloff);
+  float3 redLine = encodeOverlayColor(float3(1.0f, 0.0f, 0.0f),
+                                      p.pivotPreset);
+  float3 greenLine = encodeOverlayColor(float3(0.0f, 1.0f, 0.0f),
+                                        p.pivotPreset);
+  float3 blueLine = encodeOverlayColor(float3(0.0f, 0.0f, 1.0f),
+                                       p.pivotPreset);
+  out = overlayRgbLine(out, ramp.x, screenY, redLine, halfThickness, falloff);
+  out = overlayRgbLine(out, ramp.y, screenY, greenLine, halfThickness, falloff);
+  out = overlayRgbLine(out, ramp.z, screenY, blueLine, halfThickness, falloff);
 
   float shadowMix = p.shadowMix * 0.6f;
   float highlightMix = p.highlightMix * 0.6f;

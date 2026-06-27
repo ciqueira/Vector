@@ -78,6 +78,10 @@
 
 #define kAboutHelpUrl "https://github.com/ciqueira/Vector"
 
+static constexpr double kShadowRedBellyCenterFixed = -0.705;
+static constexpr double kShadowGreenBellyCenterFixed = -0.556;
+static constexpr double kShadowBlueBellyCenterFixed = -0.626;
+
 static void openExternalUrl(const char *url) {
 #ifdef _WIN32
   ShellExecuteA(NULL, "open", url, NULL, NULL, SW_SHOWNORMAL);
@@ -382,12 +386,9 @@ MCVectorParams MCVectorPlugin::getActiveParams(double time) {
       static_cast<float>(m_ShadowCurveBias->getValueAtTime(time) * 0.6);
   p.highlightCurveBias =
       static_cast<float>(m_HighlightCurveBias->getValueAtTime(time) * 0.2);
-  p.shadowRedBellyCenter =
-      static_cast<float>(m_ShadowRedBellyCenter->getValueAtTime(time));
-  p.shadowGreenBellyCenter =
-      static_cast<float>(m_ShadowGreenBellyCenter->getValueAtTime(time));
-  p.shadowBlueBellyCenter =
-      static_cast<float>(m_ShadowBlueBellyCenter->getValueAtTime(time));
+  p.shadowRedBellyCenter = static_cast<float>(kShadowRedBellyCenterFixed);
+  p.shadowGreenBellyCenter = static_cast<float>(kShadowGreenBellyCenterFixed);
+  p.shadowBlueBellyCenter = static_cast<float>(kShadowBlueBellyCenterFixed);
   return p;
 }
 
@@ -562,13 +563,18 @@ void MCVectorFactory::describeInContext(OFX::ImageEffectDescriptor &desc,
                  1.0, -1.0, 1.0, *grp, *page);
     defineDouble(desc, kParamHighlightCurveBias, "Highlight Curve Bias", 0.0,
                  -1.0, 1.0, -1.0, 1.0, *grp, *page);
-    defineDouble(desc, kParamShadowRedBellyCenter, "Shadow Red Belly Center",
-                 0.0, -1.0, 1.0, -1.0, 1.0, *grp, *page);
-    defineDouble(desc, kParamShadowGreenBellyCenter,
-                 "Shadow Green Belly Center", 0.0, -1.0, 1.0, -1.0, 1.0,
-                 *grp, *page);
-    defineDouble(desc, kParamShadowBlueBellyCenter, "Shadow Blue Belly Center",
-                 0.0, -1.0, 1.0, -1.0, 1.0, *grp, *page);
+    OFX::DoubleParamDescriptor *redBellyCenter = defineDouble(
+        desc, kParamShadowRedBellyCenter, "Shadow Red Belly Center",
+        kShadowRedBellyCenterFixed, -1.0, 1.0, -1.0, 1.0, *grp, *page);
+    redBellyCenter->setIsSecret(true);
+    OFX::DoubleParamDescriptor *greenBellyCenter = defineDouble(
+        desc, kParamShadowGreenBellyCenter, "Shadow Green Belly Center",
+        kShadowGreenBellyCenterFixed, -1.0, 1.0, -1.0, 1.0, *grp, *page);
+    greenBellyCenter->setIsSecret(true);
+    OFX::DoubleParamDescriptor *blueBellyCenter = defineDouble(
+        desc, kParamShadowBlueBellyCenter, "Shadow Blue Belly Center",
+        kShadowBlueBellyCenterFixed, -1.0, 1.0, -1.0, 1.0, *grp, *page);
+    blueBellyCenter->setIsSecret(true);
 
     OFX::BooleanParamDescriptor *showCurve =
         desc.defineBooleanParam(kParamShowToneCurve);
@@ -617,14 +623,14 @@ void MCVectorFactory::describeInContext(OFX::ImageEffectDescriptor &desc,
     OFX::GroupParamDescriptor *grp =
         desc.defineGroupParam("grpZoneSaturation");
     grp->setLabels("Zone Saturation", "Zone Saturation", "Zone Saturation");
-    grp->setOpen(false);
+    grp->setOpen(true);
     page->addChild(*grp);
 
     OFX::BooleanParamDescriptor *enable =
         desc.defineBooleanParam(kParamEnableZoneSaturation);
     enable->setLabels("Enable Zone Sat", "Enable Zone Sat",
                       "Enable Zone Sat");
-    enable->setDefault(false);
+    enable->setDefault(true);
     enable->setParent(*grp);
     page->addChild(*enable);
 

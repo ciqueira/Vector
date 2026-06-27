@@ -405,6 +405,88 @@ __device__ inline float3 encodePatchTransfer(float3 color, int pivotPreset) {
   return color;
 }
 
+__device__ inline float3 rec709LinearToXyz(float3 color) {
+  return f3(color.x * 0.41239080f + color.y * 0.35758434f +
+                color.z * 0.18048079f,
+            color.x * 0.21263901f + color.y * 0.71516868f +
+                color.z * 0.07219232f,
+            color.x * 0.01933082f + color.y * 0.11919478f +
+                color.z * 0.95053215f);
+}
+
+__device__ inline float3 adaptXyzD65ToD60(float3 xyz) {
+  return f3(xyz.x * 1.013034914650f + xyz.y * 0.006105257823f +
+                xyz.z * -0.014970943627f,
+            xyz.x * 0.007698230125f + xyz.y * 0.998163352118f +
+                xyz.z * -0.005032038535f,
+            xyz.x * -0.002841317432f + xyz.y * 0.004685156723f +
+                xyz.z * 0.924506137458f);
+}
+
+__device__ inline float3 xyzToInputLinearRgb(float3 xyz, int pivotPreset) {
+  if (pivotPreset == 0)
+    return f3(xyz.x * 1.64102338f + xyz.y * -0.32480329f +
+                  xyz.z * -0.23642470f,
+              xyz.x * -0.66366286f + xyz.y * 1.61533159f +
+                  xyz.z * 0.01675635f,
+              xyz.x * 0.01172189f + xyz.y * -0.00828444f +
+                  xyz.z * 0.98839486f);
+  if (pivotPreset == 1)
+    return f3(xyz.x * 1.51667204f + xyz.y * -0.28147805f +
+                  xyz.z * -0.14696363f,
+              xyz.x * -0.46491710f + xyz.y * 1.25142378f +
+                  xyz.z * 0.17488461f,
+              xyz.x * 0.06484905f + xyz.y * 0.10913934f +
+                  xyz.z * 0.76141462f);
+  if (pivotPreset == 2)
+    return f3(xyz.x * 1.78906548f + xyz.y * -0.48253384f +
+                  xyz.z * -0.20007578f,
+              xyz.x * -0.63984859f + xyz.y * 1.39639986f +
+                  xyz.z * 0.19443229f,
+              xyz.x * -0.04153153f + xyz.y * 0.08233536f +
+                  xyz.z * 0.87886840f);
+  if (pivotPreset == 3)
+    return f3(xyz.x * 1.50921547f + xyz.y * -0.25059735f +
+                  xyz.z * -0.16881148f,
+              xyz.x * -0.49154545f + xyz.y * 1.36124555f +
+                  xyz.z * 0.09728294f,
+              xyz.z * 0.91822495f);
+  return xyz;
+}
+
+__device__ inline float3 shapeOverlayColor(float3 color) {
+  const float maxv = fmaxf(color.x, fmaxf(color.y, color.z));
+  const float minv = fminf(color.x, fminf(color.y, color.z));
+  if (maxv - minv < 0.001f)
+    return color;
+
+  const float saturationBoost = 2.295f;
+  const float brightnessBoost = 1.302f;
+  const float whitePull = 0.636f;
+  color.x = maxv - (maxv - color.x) * saturationBoost;
+  color.y = maxv - (maxv - color.y) * saturationBoost;
+  color.z = maxv - (maxv - color.z) * saturationBoost;
+  color.x = fminf(color.x * brightnessBoost, 1.0f);
+  color.y = fminf(color.y * brightnessBoost, 1.0f);
+  color.z = fminf(color.z * brightnessBoost, 1.0f);
+  return f3(color.x + (1.0f - color.x) * whitePull,
+            color.y + (1.0f - color.y) * whitePull,
+            color.z + (1.0f - color.z) * whitePull);
+}
+
+__device__ inline float3 encodeOverlayColor(float3 rec709LinearColor,
+                                            int pivotPreset) {
+  if (pivotPreset < 0 || pivotPreset > 3)
+    return rec709LinearColor;
+
+  float3 xyz = rec709LinearToXyz(rec709LinearColor);
+  if (pivotPreset == 0)
+    xyz = adaptXyzD65ToD60(xyz);
+  return encodePatchTransfer(shapeOverlayColor(
+                                 xyzToInputLinearRgb(xyz, pivotPreset)),
+                             pivotPreset);
+}
+
 __device__ inline float3 getShadowPatchColor(float pivot, float colorMix,
                                              float neutralBlack,
                                              float curveBias,
@@ -494,13 +576,18 @@ __device__ inline float3 drawSatCurve(float3 out, int x, int y, int width,
   const float halfThickness = 5.0f / (float)height;
   const float spacing = halfThickness * 2.0f;
   const float falloff = 1.0f / (float)height;
+  const float3 redLine = encodeOverlayColor(f3(1.0f, 0.0f, 0.0f),
+                                            p.pivotPreset);
+  const float3 greenLine = encodeOverlayColor(f3(0.0f, 1.0f, 0.0f),
+                                              p.pivotPreset);
+  const float3 blueLine = encodeOverlayColor(f3(0.0f, 0.0f, 1.0f),
+                                             p.pivotPreset);
 
-  out = overlayRgbLine(out, baseCurve + spacing, yf, f3(1.0f, 0.0f, 0.0f),
-                       halfThickness, falloff);
-  out = overlayRgbLine(out, baseCurve, yf, f3(0.0f, 1.0f, 0.0f),
-                       halfThickness, falloff);
-  out = overlayRgbLine(out, baseCurve - spacing, yf, f3(0.0f, 0.0f, 1.0f),
-                       halfThickness, falloff);
+  out = overlayRgbLine(out, baseCurve + spacing, yf, redLine, halfThickness,
+                       falloff);
+  out = overlayRgbLine(out, baseCurve, yf, greenLine, halfThickness, falloff);
+  out = overlayRgbLine(out, baseCurve - spacing, yf, blueLine, halfThickness,
+                       falloff);
   return out;
 }
 
@@ -513,8 +600,17 @@ __device__ inline float3 drawZoneCurve(float3 out, int x, int y, int width,
   const float yf = (float)y / (float)height;
   const float gamma = 0.4101205819200422f;
   const float xTone = powf(clampf(xf, 0.0f, 1.0f), gamma);
-  const float halfThickness = 4.0f / (float)height;
+  const float halfThickness = 5.0f / (float)height;
+  const float spacing = halfThickness * 2.0f;
   const float falloff = 1.0f / (float)height;
+  const float3 pivotColor = encodeOverlayColor(f3(0.72f, 0.72f, 0.72f),
+                                               p.pivotPreset);
+  const float3 redLine = encodeOverlayColor(f3(1.0f, 0.0f, 0.0f),
+                                            p.pivotPreset);
+  const float3 greenLine = encodeOverlayColor(f3(0.0f, 1.0f, 0.0f),
+                                              p.pivotPreset);
+  const float3 blueLine = encodeOverlayColor(f3(0.0f, 0.0f, 1.0f),
+                                             p.pivotPreset);
 
   const float pivotX = clampf(p.zonePivot, 0.0f, 1.0f);
   const float pivotDx = fabsf(xf - pivotX) * (float)width;
@@ -523,14 +619,17 @@ __device__ inline float3 drawZoneCurve(float3 out, int x, int y, int width,
       clampf(1.0f - (sqrtf(pivotDx * pivotDx + pivotDy * pivotDy) - 3.0f) /
                          2.0f,
              0.0f, 1.0f);
-  out = f3(out.x * (1.0f - pivotDot) + 0.72f * pivotDot,
-           out.y * (1.0f - pivotDot) + 0.72f * pivotDot,
-           out.z * (1.0f - pivotDot) + 0.72f * pivotDot);
+  out = f3(out.x * (1.0f - pivotDot) + pivotColor.x * pivotDot,
+           out.y * (1.0f - pivotDot) + pivotColor.y * pivotDot,
+           out.z * (1.0f - pivotDot) + pivotColor.z * pivotDot);
 
   const float satMult = zoneSatMultiplier(xTone, p);
   const float curve = clampf(0.5f + (satMult - 1.0f) * 0.5f, 0.0f, 1.0f);
-  return overlayRgbLine(out, curve, yf, f3(0.35f, 1.0f, 0.35f),
-                        halfThickness, falloff);
+  out = overlayRgbLine(out, curve + spacing, yf, redLine, halfThickness,
+                       falloff);
+  out = overlayRgbLine(out, curve, yf, greenLine, halfThickness, falloff);
+  return overlayRgbLine(out, curve - spacing, yf, blueLine, halfThickness,
+                        falloff);
 }
 
 __device__ inline float3 drawToneCurve(float3 out, int x, int y, int width,
@@ -543,13 +642,16 @@ __device__ inline float3 drawToneCurve(float3 out, int x, int y, int width,
   const float3 ramp = applySplitTone(f3(rv, rv, rv), p);
   const float halfThickness = 5.0f / (float)height;
   const float falloff = 1.0f / (float)height;
+  const float3 redLine = encodeOverlayColor(f3(1.0f, 0.0f, 0.0f),
+                                            p.pivotPreset);
+  const float3 greenLine = encodeOverlayColor(f3(0.0f, 1.0f, 0.0f),
+                                              p.pivotPreset);
+  const float3 blueLine = encodeOverlayColor(f3(0.0f, 0.0f, 1.0f),
+                                             p.pivotPreset);
 
-  out = overlayRgbLine(out, ramp.x, screenY, f3(1.0f, 0.0f, 0.0f),
-                       halfThickness, falloff);
-  out = overlayRgbLine(out, ramp.y, screenY, f3(0.0f, 1.0f, 0.0f),
-                       halfThickness, falloff);
-  out = overlayRgbLine(out, ramp.z, screenY, f3(0.0f, 0.0f, 1.0f),
-                       halfThickness, falloff);
+  out = overlayRgbLine(out, ramp.x, screenY, redLine, halfThickness, falloff);
+  out = overlayRgbLine(out, ramp.y, screenY, greenLine, halfThickness, falloff);
+  out = overlayRgbLine(out, ramp.z, screenY, blueLine, halfThickness, falloff);
 
   const float shadowMix = p.shadowMix * 0.6f;
   const float highlightMix = p.highlightMix * 0.6f;
