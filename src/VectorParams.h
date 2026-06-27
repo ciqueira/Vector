@@ -29,6 +29,11 @@ typedef struct {
   float neutralWhite;
   float pivotWidth;
   float pivotOffset;
+  float shadowCurveBias;
+  float highlightCurveBias;
+  float shadowRedBellyCenter;
+  float shadowGreenBellyCenter;
+  float shadowBlueBellyCenter;
 } MCVectorParams;
 
 #endif // MCVECTOR_PARAMS_H

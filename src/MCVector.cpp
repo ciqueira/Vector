@@ -61,6 +61,11 @@
 #define kParamNeutralWhite "neutralWhite"
 #define kParamPivotWidth "pivotWidth"
 #define kParamPivotOffset "pivotOffset"
+#define kParamShadowCurveBias "shadowCurveBias"
+#define kParamHighlightCurveBias "highlightCurveBias"
+#define kParamShadowRedBellyCenter "shadowRedBellyCenter"
+#define kParamShadowGreenBellyCenter "shadowGreenBellyCenter"
+#define kParamShadowBlueBellyCenter "shadowBlueBellyCenter"
 #define kParamShowToneCurve "showToneCurve"
 #define kParamAboutHelp "aboutHelp"
 #define kParamAppMCNexus "appMCNexus"
@@ -220,6 +225,11 @@ private:
   OFX::DoubleParam *m_NeutralWhite;
   OFX::DoubleParam *m_PivotWidth;
   OFX::DoubleParam *m_PivotOffset;
+  OFX::DoubleParam *m_ShadowCurveBias;
+  OFX::DoubleParam *m_HighlightCurveBias;
+  OFX::DoubleParam *m_ShadowRedBellyCenter;
+  OFX::DoubleParam *m_ShadowGreenBellyCenter;
+  OFX::DoubleParam *m_ShadowBlueBellyCenter;
   OFX::BooleanParam *m_ShowToneCurve;
 };
 
@@ -245,6 +255,11 @@ MCVectorPlugin::MCVectorPlugin(OfxImageEffectHandle handle)
   m_NeutralWhite = fetchDoubleParam(kParamNeutralWhite);
   m_PivotWidth = fetchDoubleParam(kParamPivotWidth);
   m_PivotOffset = fetchDoubleParam(kParamPivotOffset);
+  m_ShadowCurveBias = fetchDoubleParam(kParamShadowCurveBias);
+  m_HighlightCurveBias = fetchDoubleParam(kParamHighlightCurveBias);
+  m_ShadowRedBellyCenter = fetchDoubleParam(kParamShadowRedBellyCenter);
+  m_ShadowGreenBellyCenter = fetchDoubleParam(kParamShadowGreenBellyCenter);
+  m_ShadowBlueBellyCenter = fetchDoubleParam(kParamShadowBlueBellyCenter);
   m_ShowToneCurve = fetchBooleanParam(kParamShowToneCurve);
 }
 
@@ -268,13 +283,24 @@ MCVectorParams MCVectorPlugin::getActiveParams(double time) {
 
   p.splitShadow = static_cast<float>(m_SplitShadow->getValueAtTime(time));
   p.shadowMix = static_cast<float>(m_ShadowMix->getValueAtTime(time));
-  p.neutralBlack = static_cast<float>(m_NeutralBlack->getValueAtTime(time));
+  p.neutralBlack =
+      static_cast<float>(0.5 + m_NeutralBlack->getValueAtTime(time) * 0.5);
   p.splitHighlight =
       static_cast<float>(m_SplitHighlight->getValueAtTime(time));
   p.highlightMix = static_cast<float>(m_HighlightMix->getValueAtTime(time));
   p.neutralWhite = static_cast<float>(m_NeutralWhite->getValueAtTime(time));
   p.pivotWidth = static_cast<float>(m_PivotWidth->getValueAtTime(time));
   p.pivotOffset = static_cast<float>(m_PivotOffset->getValueAtTime(time));
+  p.shadowCurveBias =
+      static_cast<float>(m_ShadowCurveBias->getValueAtTime(time) * 0.6);
+  p.highlightCurveBias =
+      static_cast<float>(m_HighlightCurveBias->getValueAtTime(time) * 0.2);
+  p.shadowRedBellyCenter =
+      static_cast<float>(m_ShadowRedBellyCenter->getValueAtTime(time));
+  p.shadowGreenBellyCenter =
+      static_cast<float>(m_ShadowGreenBellyCenter->getValueAtTime(time));
+  p.shadowBlueBellyCenter =
+      static_cast<float>(m_ShadowBlueBellyCenter->getValueAtTime(time));
   return p;
 }
 
@@ -475,6 +501,16 @@ void MCVectorFactory::describeInContext(OFX::ImageEffectDescriptor &desc,
                  1.0, *grp, *page);
     defineDouble(desc, kParamPivotOffset, "Pivot Offset", 0.0, -1.0, 1.0,
                  -1.0, 1.0, *grp, *page);
+    defineDouble(desc, kParamShadowCurveBias, "Shadow Curve Bias", 0.0, -1.0,
+                 1.0, -1.0, 1.0, *grp, *page);
+    defineDouble(desc, kParamHighlightCurveBias, "Highlight Curve Bias", 0.0,
+                 -1.0, 1.0, -1.0, 1.0, *grp, *page);
+    defineDouble(desc, kParamShadowRedBellyCenter, "Shadow Red Belly Center",
+                 0.0, -1.0, 1.0, -1.0, 1.0, *grp, *page);
+    defineDouble(desc, kParamShadowGreenBellyCenter,
+                 "Shadow Green Belly Center", 0.0, -1.0, 1.0, -1.0, 1.0, *grp, *page);
+    defineDouble(desc, kParamShadowBlueBellyCenter, "Shadow Blue Belly Center",
+                 0.0, -1.0, 1.0, -1.0, 1.0, *grp, *page);
 
     OFX::BooleanParamDescriptor *showCurve =
         desc.defineBooleanParam(kParamShowToneCurve);

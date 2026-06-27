@@ -39,6 +39,11 @@ struct MCVectorParams {
   float neutralWhite;
   float pivotWidth;
   float pivotOffset;
+  float shadowCurveBias;
+  float highlightCurveBias;
+  float shadowRedBellyCenter;
+  float shadowGreenBellyCenter;
+  float shadowBlueBellyCenter;
 };
 
 float pivotFromPreset(int preset) {
@@ -88,8 +93,86 @@ float3 applyCurvesSaturation(float3 in, constant MCVectorParams &p) {
   return applyRgbDirectSat(in, satMult);
 }
 
+float splitCurveOffset(float curveBias) {
+  return clamp(curveBias, -1.0f, 1.0f) * 0.25f;
+}
+
+float splitCurveLow(float curveBias) {
+  return clamp(0.333f + splitCurveOffset(curveBias), 0.05f, 0.95f);
+}
+
+float splitCurveHigh(float curveBias) {
+  return clamp(0.666f + splitCurveOffset(curveBias), 0.05f, 0.95f);
+}
+
+float bezierY(float t, float p1, float p2) {
+  float inv = 1.0f - t;
+  return 3.0f * p1 * inv * inv * t + 3.0f * p2 * inv * t * t +
+         t * t * t;
+}
+
+float smoothBell(float x, float center) {
+  if (x <= 0.0f || x >= 1.0f) return 0.0f;
+
+  if (x <= center) {
+    float t = clamp(x / center, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+  }
+
+  float t = clamp((1.0f - x) / (1.0f - center), 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
+
+float shadowBellyCenterValue(float bellyCenter) {
+  float position = clamp(bellyCenter, -1.0f, 1.0f);
+  return clamp(0.666f + position * 0.55f, 0.08f, 0.92f);
+}
+
+float shadowBiasedBezierY(float x, float curveBias, float bellyCenter) {
+  float offset = splitCurveOffset(curveBias);
+  if (abs(offset) <= 1.0e-6f) return x;
+
+  float biased = bezierY(x, 0.333f + offset, 0.666f + offset);
+  float center = shadowBellyCenterValue(bellyCenter);
+  float focus = smoothBell(x, center);
+  return clamp(x + (biased - x) * focus, 0.0f, 1.0f);
+}
+
+float shadowBellyEnvelope(float x, float bellyCenter) {
+  float position = clamp(bellyCenter, -1.0f, 1.0f);
+  if (abs(position) <= 1.0e-6f) {
+    return 3.0f * (1.0f - x) * x * x;
+  }
+
+  float center = shadowBellyCenterValue(bellyCenter);
+  return (4.0f / 9.0f) * smoothBell(x, center);
+}
+
+float shadowBlackEnvelopeBase(float x) {
+  float inv = 1.0f - x;
+  return inv * inv * inv + 3.0f * inv * inv * x;
+}
+
+float shadowBlackEnvelope(float x, float bellyCenter) {
+  float position = clamp(bellyCenter, -1.0f, 1.0f);
+  if (abs(position) <= 1.0e-6f) {
+    return shadowBlackEnvelopeBase(x);
+  }
+
+  float center = shadowBellyCenterValue(bellyCenter);
+  const float defaultCenter = 0.666f;
+  float mapped = x <= center
+                     ? x * (defaultCenter / center)
+                     : defaultCenter +
+                           (x - center) * ((1.0f - defaultCenter) /
+                                           (1.0f - center));
+  return shadowBlackEnvelopeBase(clamp(mapped, 0.0f, 1.0f));
+}
+
 float3 applyShadowSplit(float3 in, float pivot, float strength, float colorMix,
-                        float neutralBlack) {
+                        float neutralBlack, float curveBias,
+                        float redBellyCenter, float greenBellyCenter,
+                        float blueBellyCenter) {
   float3 out = in;
   if (pivot <= 1.0e-6f) return out;
 
@@ -98,43 +181,42 @@ float3 applyShadowSplit(float3 in, float pivot, float strength, float colorMix,
 
   if (in.x <= pivot) {
     float r = in.x / pivot;
-    float inv = 1.0f - r;
-    out.x = ((0.0f - blueStrength * neutralBlack -
-              greenStrength * neutralBlack) * inv * inv * inv +
-             3.0f * (0.333f - blueStrength * neutralBlack -
-                      greenStrength * neutralBlack) * inv * inv * r +
-             3.0f * (0.666f - blueStrength - greenStrength) * inv * r * r +
-             r * r * r) * pivot;
+    float belly = shadowBellyEnvelope(r, redBellyCenter);
+    float black = shadowBlackEnvelope(r, redBellyCenter) * neutralBlack;
+    float base = shadowBiasedBezierY(r, curveBias, redBellyCenter);
+    out.x = (base - (blueStrength + greenStrength) * (black + belly)) *
+            pivot;
   }
 
   if (in.y <= pivot) {
     float g = in.y / pivot;
-    float inv = 1.0f - g;
-    out.y = (greenStrength * neutralBlack * inv * inv * inv +
-             3.0f * (greenStrength * neutralBlack + 0.333f) * inv * inv * g +
-             3.0f * (greenStrength + 0.666f) * inv * g * g + g * g * g) *
-            pivot;
+    float belly = shadowBellyEnvelope(g, greenBellyCenter);
+    float black = shadowBlackEnvelope(g, greenBellyCenter) * neutralBlack;
+    float base = shadowBiasedBezierY(g, curveBias, greenBellyCenter);
+    out.y = (base + greenStrength * (black + belly)) * pivot;
   }
 
   if (in.z <= pivot) {
     float b = in.z / pivot;
-    float inv = 1.0f - b;
-    out.z = (blueStrength * neutralBlack * inv * inv * inv +
-             3.0f * (blueStrength * neutralBlack + 0.333f) * inv * inv * b +
-             3.0f * (blueStrength + 0.666f) * inv * b * b + b * b * b) *
-            pivot;
+    float belly = shadowBellyEnvelope(b, blueBellyCenter);
+    float black = shadowBlackEnvelope(b, blueBellyCenter) * neutralBlack;
+    float base = shadowBiasedBezierY(b, curveBias, blueBellyCenter);
+    out.z = (base + blueStrength * (black + belly)) * pivot;
   }
   return out;
 }
 
 float3 applyHighlightSplit(float3 in, float pivot, float strength,
-                           float colorMix, float neutralWhite) {
+                           float colorMix, float neutralWhite,
+                           float curveBias) {
   float3 invIn = 1.0f - in;
   float invPivot = 1.0f - pivot;
   if (invPivot <= 1.0e-6f) return in;
 
   float redStrength = ((1.0f - colorMix) * strength) / 8.0f;
   float greenStrength = (colorMix * strength) / 8.0f;
+  float curveLow = splitCurveLow(curveBias);
+  float curveHigh = splitCurveHigh(curveBias);
   float3 invOut = invIn;
 
   if (invIn.x <= invPivot) {
@@ -142,9 +224,9 @@ float3 applyHighlightSplit(float3 in, float pivot, float strength,
     float inv = 1.0f - r;
     invOut.x = ((1.0f - (neutralWhite * redStrength + 1.0f)) *
                     inv * inv * inv +
-                3.0f * (1.0f - (neutralWhite * redStrength + 0.666f)) *
+                3.0f * (1.0f - (neutralWhite * redStrength + curveHigh)) *
                     inv * inv * r +
-                3.0f * (1.0f - (redStrength + 0.333f)) * inv * r * r +
+                3.0f * (1.0f - (redStrength + curveLow)) * inv * r * r +
                 r * r * r) * invPivot;
   }
 
@@ -153,9 +235,9 @@ float3 applyHighlightSplit(float3 in, float pivot, float strength,
     float inv = 1.0f - g;
     invOut.y = ((1.0f - (neutralWhite * greenStrength + 1.0f)) *
                     inv * inv * inv +
-                3.0f * (1.0f - (neutralWhite * greenStrength + 0.666f)) *
+                3.0f * (1.0f - (neutralWhite * greenStrength + curveHigh)) *
                     inv * inv * g +
-                3.0f * (1.0f - (greenStrength + 0.333f)) * inv * g * g +
+                3.0f * (1.0f - (greenStrength + curveLow)) * inv * g * g +
                 g * g * g) * invPivot;
   }
 
@@ -165,10 +247,10 @@ float3 applyHighlightSplit(float3 in, float pivot, float strength,
     invOut.z = ((1.0f - (1.0f - greenStrength * neutralWhite -
                          redStrength * neutralWhite)) *
                     inv * inv * inv +
-                3.0f * (1.0f - (0.666f - greenStrength * neutralWhite -
+                3.0f * (1.0f - (curveHigh - greenStrength * neutralWhite -
                                  redStrength * neutralWhite)) *
                     inv * inv * b +
-                3.0f * (1.0f - (0.333f - greenStrength - redStrength)) *
+                3.0f * (1.0f - (curveLow - greenStrength - redStrength)) *
                     inv * b * b +
                 b * b * b) * invPivot;
   }
@@ -186,18 +268,152 @@ float3 applySplitTone(float3 in, constant MCVectorParams &p) {
   float pivotWidth = p.pivotWidth * (pivot + 0.001f);
   float shadowPivot = clamp(pivot - pivotWidth, 0.0f, 1.0f);
   float highlightPivot = clamp(pivot + pivotWidth, 0.0f, 1.0f);
-  float shadowStrength = p.splitShadow * 2.0f;
+  float shadowStrength = p.splitShadow * 2.5f;
 
   float3 out = applyShadowSplit(clamped, shadowPivot, shadowStrength, shadowMix,
-                                neutralBlack);
+                                neutralBlack, p.shadowCurveBias,
+                                p.shadowRedBellyCenter,
+                                p.shadowGreenBellyCenter,
+                                p.shadowBlueBellyCenter);
   return applyHighlightSplit(out, highlightPivot, p.splitHighlight,
-                             highlightMix, neutralWhite);
+                             highlightMix, neutralWhite,
+                             p.highlightCurveBias);
 }
 
 float3 applyVector(float3 in, constant MCVectorParams &p) {
   float3 sat = p.enableSaturation != 0 ? applyCurvesSaturation(in, p) : in;
   float3 split = p.enableSplitTone != 0 ? applySplitTone(in, p) : in;
   return in + (sat - in) + (split - in);
+}
+
+float3 normalizePatchDelta(float3 delta) {
+  float minv = min(delta.x, min(delta.y, delta.z));
+  float3 color = delta - float3(minv);
+  float maxv = max(color.x, max(color.y, color.z));
+
+  if (maxv <= 0.000001f) return float3(0.18f);
+
+  return color / maxv;
+}
+
+float encodeDavinciIntermediate(float x) {
+  float a = 0.0075f;
+  float b = 7.0f;
+  float c = 0.07329248f;
+  float m = 10.44426855f;
+  float linCut = 0.00262409f;
+  return x > linCut ? (log2(x + a) + b) * c : x * m;
+}
+
+float encodeAcescct(float x) {
+  float a = 10.5402377416545f;
+  float b = 0.0729055341958355f;
+  float c = 9.72f;
+  float d = 17.52f;
+  float e = 0.0078125f;
+  return x <= e ? a * x + b : (log2(x) + c) / d;
+}
+
+float encodeLogC3(float x) {
+  float cut = 0.010591f;
+  float a = 5.555556f;
+  float b = 0.052272f;
+  float c = 0.247190f;
+  float d = 0.385537f;
+  float e = 5.367655f;
+  float f = 0.092809f;
+  return x > cut ? c * log10(a * x + b) + d : e * x + f;
+}
+
+float encodeLogC4(float x) {
+  float a = (pow(2.0f, 18.0f) - 16.0f) / 117.45f;
+  float b = (1023.0f - 95.0f) / 1023.0f;
+  float c = 95.0f / 1023.0f;
+  float s = (7.0f * log(2.0f) * pow(2.0f, 7.0f - 14.0f * c / b)) / (a * b);
+  float t = (pow(2.0f, 14.0f * (-c / b) + 6.0f) - 64.0f) / a;
+  return x < t ? (x - t) / s
+               : (log2(a * x + 64.0f) - 6.0f) / 14.0f * b + c;
+}
+
+float3 encodePatchTransfer(float3 color, int pivotPreset) {
+  color = max(float3(0.0f), color);
+
+  if (pivotPreset == 0) {
+    return float3(encodeAcescct(color.x), encodeAcescct(color.y),
+                  encodeAcescct(color.z));
+  }
+  if (pivotPreset == 1) {
+    return float3(encodeDavinciIntermediate(color.x),
+                  encodeDavinciIntermediate(color.y),
+                  encodeDavinciIntermediate(color.z));
+  }
+  if (pivotPreset == 2) {
+    return float3(encodeLogC3(color.x), encodeLogC3(color.y),
+                  encodeLogC3(color.z));
+  }
+  if (pivotPreset == 3) {
+    return float3(encodeLogC4(color.x), encodeLogC4(color.y),
+                  encodeLogC4(color.z));
+  }
+  return color;
+}
+
+float3 getShadowPatchColor(float pivot, float colorMix, float neutralBlack,
+                           float curveBias, float redBellyCenter,
+                           float greenBellyCenter, float blueBellyCenter) {
+  if (pivot <= 0.0f) return float3(0.18f);
+
+  float sample = clamp(pivot * 0.5f, 0.0f, 1.0f);
+  float3 base = float3(sample);
+  float3 toned =
+      applyShadowSplit(base, pivot, 1.0f, colorMix, neutralBlack,
+                       curveBias, redBellyCenter, greenBellyCenter,
+                       blueBellyCenter);
+  return normalizePatchDelta(toned - base);
+}
+
+float3 getHighlightPatchColor(float pivot, float colorMix, float neutralWhite,
+                              float curveBias) {
+  if (pivot >= 1.0f) return float3(0.82f);
+
+  float sample = clamp(pivot + ((1.0f - pivot) * 0.5f), 0.0f, 1.0f);
+  float3 base = float3(sample);
+  float3 toned = applyHighlightSplit(base, pivot, 1.0f, colorMix,
+                                     neutralWhite, curveBias);
+  return normalizePatchDelta(toned - base);
+}
+
+float3 drawColorPatches(float3 out, uint x, uint y, uint width, uint height,
+                        float3 shadowColor, float3 highlightColor) {
+  float minDim = min(float(width), float(height));
+  float patch = max(140.0f, min(360.0f, minDim * 0.2315f));
+  float gap = max(5.0f, patch * 0.12f);
+  float margin = max(12.0f, minDim * 0.025f);
+  float left = float(width) - margin - patch;
+  float shadowTop = float(height) - margin - patch;
+  float highlightTop = shadowTop - gap - patch;
+  float xf = float(x);
+  float yf = float(height - 1 - y);
+
+  if (xf >= left && xf <= left + patch && yf >= highlightTop &&
+      yf <= highlightTop + patch) return highlightColor;
+
+  if (xf >= left && xf <= left + patch && yf >= shadowTop &&
+      yf <= shadowTop + patch) return shadowColor;
+
+  return out;
+}
+
+float lineAlpha(float curveY, float screenY, float halfThickness,
+                float falloff) {
+  float dist = abs(curveY - screenY);
+  return clamp(1.0f - (dist - halfThickness) / falloff, 0.0f, 1.0f);
+}
+
+float3 overlayRgbLine(float3 current, float curveY, float screenY,
+                      float3 color, float halfThickness, float falloff) {
+  float alpha = lineAlpha(curveY, screenY, halfThickness, falloff);
+  return current * (1.0f - alpha) + color * alpha;
 }
 
 float3 drawSatCurve(float3 out, uint x, uint y, uint width, uint height,
@@ -212,17 +428,17 @@ float3 drawSatCurve(float3 out, uint x, uint y, uint width, uint height,
   }
   float sMult = applyBezier(xf, p.satLow, p.satMid, p.satHigh) * effGlobalSat;
   float baseCurve = (1.0f + (sMult - 1.0f) * p.satLumMask) * 0.5f;
-  float spacing = 2.0f / float(height);
-  float thickness = 0.5f;
-  float falloff = 1.0f;
-  float alphaR = clamp(1.0f - (abs(yf - (baseCurve + spacing)) * float(height) -
-                               thickness) / falloff, 0.0f, 1.0f);
-  float alphaG = clamp(1.0f - (abs(yf - baseCurve) * float(height) -
-                               thickness) / falloff, 0.0f, 1.0f);
-  float alphaB = clamp(1.0f - (abs(yf - (baseCurve - spacing)) * float(height) -
-                               thickness) / falloff, 0.0f, 1.0f);
-  float combined = max(alphaR, max(alphaG, alphaB));
-  return out * (1.0f - combined) + float3(alphaR, alphaG, alphaB);
+  float halfThickness = 5.0f / float(height);
+  float spacing = halfThickness * 2.0f;
+  float falloff = 1.0f / float(height);
+
+  out = overlayRgbLine(out, baseCurve + spacing, yf,
+                       float3(1.0f, 0.0f, 0.0f), halfThickness, falloff);
+  out = overlayRgbLine(out, baseCurve, yf, float3(0.0f, 1.0f, 0.0f),
+                       halfThickness, falloff);
+  out = overlayRgbLine(out, baseCurve - spacing, yf,
+                       float3(0.0f, 0.0f, 1.0f), halfThickness, falloff);
+  return out;
 }
 
 float3 drawToneCurve(float3 out, uint x, uint y, uint width, uint height,
@@ -233,10 +449,37 @@ float3 drawToneCurve(float3 out, uint x, uint y, uint width, uint height,
   float screenY = float(y) / float(height);
   float3 ramp = applySplitTone(float3(rv), p);
   float halfThickness = 5.0f / float(height);
-  if (abs(ramp.x - screenY) <= halfThickness) out.x = 1.0f;
-  if (abs(ramp.y - screenY) <= halfThickness) out.y = 1.0f;
-  if (abs(ramp.z - screenY) <= halfThickness) out.z = 1.0f;
-  return out;
+  float falloff = 1.0f / float(height);
+  out = overlayRgbLine(out, ramp.x, screenY, float3(1.0f, 0.0f, 0.0f),
+                       halfThickness, falloff);
+  out = overlayRgbLine(out, ramp.y, screenY, float3(0.0f, 1.0f, 0.0f),
+                       halfThickness, falloff);
+  out = overlayRgbLine(out, ramp.z, screenY, float3(0.0f, 0.0f, 1.0f),
+                       halfThickness, falloff);
+
+  float shadowMix = p.shadowMix * 0.6f;
+  float highlightMix = p.highlightMix * 0.6f;
+  float neutralBlack = 1.0f - p.neutralBlack;
+  float neutralWhite = 1.0f - p.neutralWhite;
+  float pivot = clamp(pivotFromPreset(p.pivotPreset) + p.pivotOffset, 0.0f, 1.0f);
+  float pivotWidth = p.pivotWidth * (pivot + 0.001f);
+  float shadowPivot = clamp(pivot - pivotWidth, 0.0f, 1.0f);
+  float highlightPivot = clamp(pivot + pivotWidth, 0.0f, 1.0f);
+  float3 shadowColor =
+      encodePatchTransfer(getShadowPatchColor(shadowPivot, shadowMix,
+                                              neutralBlack,
+                                              p.shadowCurveBias,
+                                              p.shadowRedBellyCenter,
+                                              p.shadowGreenBellyCenter,
+                                              p.shadowBlueBellyCenter),
+                          p.pivotPreset);
+  float3 highlightColor =
+      encodePatchTransfer(getHighlightPatchColor(highlightPivot, highlightMix,
+                                                 neutralWhite,
+                                                 p.highlightCurveBias),
+                          p.pivotPreset);
+  return drawColorPatches(out, x, y, width, height, shadowColor,
+                          highlightColor);
 }
 
 kernel void MCVectorKernel(constant int &width [[ buffer(0) ]],
