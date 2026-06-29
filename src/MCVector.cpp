@@ -7,6 +7,7 @@
 #include "VectorMath.h"
 #include "VectorParams.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -244,14 +245,18 @@ public:
                         srcRow[x * 4 + 2]);
 
         float3 out = applyVector(in, _params);
-        out = drawToneCurve(out, imageX, imageY, width, height, _params);
-        out = drawSatCurve(out, imageX, imageY, width, height, _params);
-        out = drawZoneCurve(out, imageX, imageY, width, height, _params);
+        float overlayAlpha = 0.0f;
+        out = drawToneCurve(out, imageX, imageY, width, height, _params,
+                            overlayAlpha);
+        out = drawSatCurve(out, imageX, imageY, width, height, _params,
+                           overlayAlpha);
+        out = drawZoneCurve(out, imageX, imageY, width, height, _params,
+                            overlayAlpha);
 
         dstRow[x * 4 + 0] = out.x;
         dstRow[x * 4 + 1] = out.y;
         dstRow[x * 4 + 2] = out.z;
-        dstRow[x * 4 + 3] = srcRow[x * 4 + 3];
+        dstRow[x * 4 + 3] = std::max(srcRow[x * 4 + 3], overlayAlpha);
       }
     }
   }

@@ -88,6 +88,10 @@ float3 applyRgbDirectSat(float3 rgb, float satMult) {
 constant float kPi = 3.141592653589f;
 constant float kEpsilon = 1.0e-10f;
 constant float kOklabNeutralEpsilon = 2.0e-4f;
+constant float kOverlayReferenceHeight = 2160.0f;
+constant float kOverlayLineHalfThickness = 5.0f / kOverlayReferenceHeight;
+constant float kOverlayLineFalloff = 1.0f / kOverlayReferenceHeight;
+constant float kOverlayPatchAtReference = 360.0f;
 
 float3 adaptXyzD65ToD60(float3 xyz);
 
@@ -600,11 +604,11 @@ float3 applySplitTone(float3 in, constant MCVectorParams &p) {
 }
 
 float3 applyVector(float3 in, constant MCVectorParams &p) {
-  float3 split = p.enableSplitTone != 0 ? applySplitTone(in, p) : in;
-  float3 sat = p.enableSaturation != 0 ? applyCurvesSaturation(in, p) : in;
+  float3 base = p.enableSplitTone != 0 ? applySplitTone(in, p) : in;
+  float3 sat = p.enableSaturation != 0 ? applyCurvesSaturation(base, p) : base;
   float3 zone =
-      p.enableZoneSaturation != 0 ? applyZoneSaturation(in, p) : in;
-  return in + (split - in) + (sat - in) + (zone - in);
+      p.enableZoneSaturation != 0 ? applyZoneSaturation(base, p) : base;
+  return base + (sat - base) + (zone - base);
 }
 
 float3 normalizePatchDelta(float3 delta) {
@@ -785,11 +789,12 @@ float3 getHighlightPatchColor(float pivot, float colorMix, float neutralWhite,
 }
 
 float3 drawColorPatches(float3 out, uint x, uint y, uint width, uint height,
-                        float3 shadowColor, float3 highlightColor) {
+                        float3 shadowColor, float3 highlightColor,
+                        thread float *overlayAlpha) {
   float minDim = min(float(width), float(height));
-  float patch = max(140.0f, min(360.0f, minDim * 0.2315f));
-  float gap = max(5.0f, patch * 0.12f);
-  float margin = max(12.0f, minDim * 0.025f);
+  float patch = kOverlayPatchAtReference * (minDim / kOverlayReferenceHeight);
+  float gap = patch * 0.12f;
+  float margin = minDim * 0.025f;
   float left = float(width) - margin - patch;
   float shadowTop = float(height) - margin - patch;
   float highlightTop = shadowTop - gap - patch;
@@ -797,10 +802,16 @@ float3 drawColorPatches(float3 out, uint x, uint y, uint width, uint height,
   float yf = float(height - 1 - y);
 
   if (xf >= left && xf <= left + patch && yf >= highlightTop &&
-      yf <= highlightTop + patch) return highlightColor;
+      yf <= highlightTop + patch) {
+    *overlayAlpha = 1.0f;
+    return highlightColor;
+  }
 
   if (xf >= left && xf <= left + patch && yf >= shadowTop &&
-      yf <= shadowTop + patch) return shadowColor;
+      yf <= shadowTop + patch) {
+    *overlayAlpha = 1.0f;
+    return shadowColor;
+  }
 
   return out;
 }
@@ -812,13 +823,16 @@ float lineAlpha(float curveY, float screenY, float halfThickness,
 }
 
 float3 overlayRgbLine(float3 current, float curveY, float screenY,
-                      float3 color, float halfThickness, float falloff) {
+                      float3 color, float halfThickness, float falloff,
+                      thread float *overlayAlpha) {
   float alpha = lineAlpha(curveY, screenY, halfThickness, falloff);
-  return current * (1.0f - alpha) + color * alpha;
+  if (alpha <= 0.0f) return current;
+  *overlayAlpha = 1.0f;
+  return color;
 }
 
 float3 drawSatCurve(float3 out, uint x, uint y, uint width, uint height,
-                    constant MCVectorParams &p) {
+                    constant MCVectorParams &p, thread float *overlayAlpha) {
   if (p.enableSaturation == 0 || p.showSatCurve == 0 || width == 0 ||
       height == 0) return out;
   float xf = float(x) / float(width);
@@ -829,9 +843,9 @@ float3 drawSatCurve(float3 out, uint x, uint y, uint width, uint height,
   }
   float sMult = applyBezier(xf, p.satLow, p.satMid, p.satHigh) * effGlobalSat;
   float baseCurve = (1.0f + (sMult - 1.0f) * p.satLumMask) * 0.5f;
-  float halfThickness = 5.0f / float(height);
+  float halfThickness = kOverlayLineHalfThickness;
   float spacing = halfThickness * 2.0f;
-  float falloff = 1.0f / float(height);
+  float falloff = kOverlayLineFalloff;
   float3 redLine = encodeOverlayColor(float3(1.0f, 0.0f, 0.0f),
                                       p.pivotPreset);
   float3 greenLine = encodeOverlayColor(float3(0.0f, 1.0f, 0.0f),
@@ -840,15 +854,16 @@ float3 drawSatCurve(float3 out, uint x, uint y, uint width, uint height,
                                        p.pivotPreset);
 
   out = overlayRgbLine(out, baseCurve + spacing, yf, redLine, halfThickness,
-                       falloff);
-  out = overlayRgbLine(out, baseCurve, yf, greenLine, halfThickness, falloff);
+                       falloff, overlayAlpha);
+  out = overlayRgbLine(out, baseCurve, yf, greenLine, halfThickness, falloff,
+                       overlayAlpha);
   out = overlayRgbLine(out, baseCurve - spacing, yf, blueLine, halfThickness,
-                       falloff);
+                       falloff, overlayAlpha);
   return out;
 }
 
 float3 drawZoneCurve(float3 out, uint x, uint y, uint width, uint height,
-                     constant MCVectorParams &p) {
+                     constant MCVectorParams &p, thread float *overlayAlpha) {
   if (p.enableZoneSaturation == 0 || p.showZoneCurve == 0 || width == 0 ||
       height == 0) return out;
 
@@ -856,10 +871,9 @@ float3 drawZoneCurve(float3 out, uint x, uint y, uint width, uint height,
   float yf = float(y) / float(height);
   float gamma = 0.4101205819200422f;
   float xTone = pow(clamp(xf, 0.0f, 1.0f), gamma);
-  float halfThickness = 5.0f / float(height);
+  float halfThickness = kOverlayLineHalfThickness;
   float spacing = halfThickness * 2.0f;
-  float falloff = 1.0f / float(height);
-  float3 pivotColor = encodeOverlayColor(float3(0.72f), p.pivotPreset);
+  float falloff = kOverlayLineFalloff;
   float3 redLine = encodeOverlayColor(float3(1.0f, 0.0f, 0.0f),
                                       p.pivotPreset);
   float3 greenLine = encodeOverlayColor(float3(0.0f, 1.0f, 0.0f),
@@ -867,42 +881,51 @@ float3 drawZoneCurve(float3 out, uint x, uint y, uint width, uint height,
   float3 blueLine = encodeOverlayColor(float3(0.0f, 0.0f, 1.0f),
                                        p.pivotPreset);
 
-  float pivotX = clamp(p.zonePivot, 0.0f, 1.0f);
-  float pivotDx = abs(xf - pivotX) * float(width);
-  float pivotDy = abs(yf - 0.5f) * float(height);
-  float pivotDot = clamp(1.0f - (sqrt(pivotDx * pivotDx + pivotDy * pivotDy) -
-                                 3.0f) /
-                                    2.0f,
-                         0.0f, 1.0f);
-  out = out * (1.0f - pivotDot) + pivotColor * pivotDot;
-
   float satMult = zoneSatMultiplier(xTone, p);
   float curve = clamp(0.5f + (satMult - 1.0f) * 0.5f, 0.0f, 1.0f);
   out = overlayRgbLine(out, curve + spacing, yf, redLine, halfThickness,
-                       falloff);
-  out = overlayRgbLine(out, curve, yf, greenLine, halfThickness, falloff);
-  return overlayRgbLine(out, curve - spacing, yf, blueLine, halfThickness,
-                        falloff);
+                       falloff, overlayAlpha);
+  out = overlayRgbLine(out, curve, yf, greenLine, halfThickness, falloff,
+                       overlayAlpha);
+  out = overlayRgbLine(out, curve - spacing, yf, blueLine, halfThickness,
+                       falloff, overlayAlpha);
+
+  float pivotX = clamp(p.zonePivot, 0.0f, 1.0f);
+  float pivotTone = pow(clamp(pivotX, 0.0f, 1.0f), gamma);
+  float pivotSatMult = zoneSatMultiplier(pivotTone, p);
+  float pivotCurve = clamp(0.5f + (pivotSatMult - 1.0f) * 0.5f, 0.0f, 1.0f);
+  float barHalfWidth = kOverlayLineHalfThickness;
+  float barHalfHeight = kOverlayLineHalfThickness * 8.0f;
+  if (abs(xf - pivotX) <= barHalfWidth &&
+      abs(yf - pivotCurve) <= barHalfHeight) {
+    *overlayAlpha = 1.0f;
+    return encodeOverlayColor(float3(0.72f), p.pivotPreset);
+  }
+
+  return out;
 }
 
 float3 drawToneCurve(float3 out, uint x, uint y, uint width, uint height,
-                     constant MCVectorParams &p) {
+                     constant MCVectorParams &p, thread float *overlayAlpha) {
   if (p.enableSplitTone == 0 || p.showToneCurve == 0 || width == 0 ||
       height == 0) return out;
   float rv = float(x) / float(width);
   float screenY = float(y) / float(height);
   float3 ramp = applySplitTone(float3(rv), p);
-  float halfThickness = 5.0f / float(height);
-  float falloff = 1.0f / float(height);
+  float halfThickness = kOverlayLineHalfThickness;
+  float falloff = kOverlayLineFalloff;
   float3 redLine = encodeOverlayColor(float3(1.0f, 0.0f, 0.0f),
                                       p.pivotPreset);
   float3 greenLine = encodeOverlayColor(float3(0.0f, 1.0f, 0.0f),
                                         p.pivotPreset);
   float3 blueLine = encodeOverlayColor(float3(0.0f, 0.0f, 1.0f),
                                        p.pivotPreset);
-  out = overlayRgbLine(out, ramp.x, screenY, redLine, halfThickness, falloff);
-  out = overlayRgbLine(out, ramp.y, screenY, greenLine, halfThickness, falloff);
-  out = overlayRgbLine(out, ramp.z, screenY, blueLine, halfThickness, falloff);
+  out = overlayRgbLine(out, ramp.x, screenY, redLine, halfThickness, falloff,
+                       overlayAlpha);
+  out = overlayRgbLine(out, ramp.y, screenY, greenLine, halfThickness, falloff,
+                       overlayAlpha);
+  out = overlayRgbLine(out, ramp.z, screenY, blueLine, halfThickness, falloff,
+                       overlayAlpha);
 
   float shadowMix = p.shadowMix * 0.6f;
   float highlightMix = p.highlightMix * 0.6f;
@@ -926,7 +949,7 @@ float3 drawToneCurve(float3 out, uint x, uint y, uint width, uint height,
                                                  p.highlightCurveBias),
                           p.pivotPreset);
   return drawColorPatches(out, x, y, width, height, shadowColor,
-                          highlightColor);
+                          highlightColor, overlayAlpha);
 }
 
 kernel void MCVectorKernel(constant int &width [[ buffer(0) ]],
@@ -942,14 +965,18 @@ kernel void MCVectorKernel(constant int &width [[ buffer(0) ]],
 
   float3 in = float3(input[idx + 0], input[idx + 1], input[idx + 2]);
   float3 out = applyVector(in, params);
-  out = drawToneCurve(out, id.x, id.y, uint(width), uint(height), params);
-  out = drawSatCurve(out, id.x, id.y, uint(width), uint(height), params);
-  out = drawZoneCurve(out, id.x, id.y, uint(width), uint(height), params);
+  float overlayAlpha = 0.0f;
+  out = drawToneCurve(out, id.x, id.y, uint(width), uint(height), params,
+                      &overlayAlpha);
+  out = drawSatCurve(out, id.x, id.y, uint(width), uint(height), params,
+                     &overlayAlpha);
+  out = drawZoneCurve(out, id.x, id.y, uint(width), uint(height), params,
+                      &overlayAlpha);
 
   output[idx + 0] = out.x;
   output[idx + 1] = out.y;
   output[idx + 2] = out.z;
-  output[idx + 3] = input[idx + 3];
+  output[idx + 3] = max(input[idx + 3], overlayAlpha);
 }
 )METAL";
 

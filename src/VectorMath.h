@@ -82,6 +82,11 @@ inline float3 applyRgbDirectSat(float3 rgb, float satMult) {
 static constexpr float kPi = 3.141592653589f;
 static constexpr float kEpsilon = 1.0e-10f;
 static constexpr float kOklabNeutralEpsilon = 2.0e-4f;
+static constexpr float kOverlayReferenceHeight = 2160.0f;
+static constexpr float kOverlayLineHalfThickness =
+    5.0f / kOverlayReferenceHeight;
+static constexpr float kOverlayLineFalloff = 1.0f / kOverlayReferenceHeight;
+static constexpr float kOverlayPatchAtReference = 360.0f;
 
 inline float wrapUnit(float value) {
   value = std::fmod(value, 1.0f);
@@ -653,16 +658,13 @@ inline float3 applySplitTone(float3 in, const MCVectorParams &p) {
 }
 
 inline float3 applyVector(float3 in, const MCVectorParams &p) {
-  const float3 split = p.enableSplitTone ? applySplitTone(in, p) : in;
-  const float3 sat = p.enableSaturation ? applyCurvesSaturation(in, p) : in;
+  const float3 base = p.enableSplitTone ? applySplitTone(in, p) : in;
+  const float3 sat = p.enableSaturation ? applyCurvesSaturation(base, p) : base;
   const float3 zone =
-      p.enableZoneSaturation ? applyZoneSaturation(in, p) : in;
-  return make_float3(in.x + (split.x - in.x) + (sat.x - in.x) +
-                         (zone.x - in.x),
-                     in.y + (split.y - in.y) + (sat.y - in.y) +
-                         (zone.y - in.y),
-                     in.z + (split.z - in.z) + (sat.z - in.z) +
-                         (zone.z - in.z));
+      p.enableZoneSaturation ? applyZoneSaturation(base, p) : base;
+  return make_float3(base.x + (sat.x - base.x) + (zone.x - base.x),
+                     base.y + (sat.y - base.y) + (zone.y - base.y),
+                     base.z + (sat.z - base.z) + (zone.z - base.z));
 }
 
 inline float3 normalizePatchDelta(float3 delta) {
@@ -865,11 +867,13 @@ inline float3 getHighlightPatchColor(float pivot, float colorMix,
 }
 
 inline float3 drawColorPatches(float3 out, int x, int y, int width, int height,
-                               float3 shadowColor, float3 highlightColor) {
+                               float3 shadowColor, float3 highlightColor,
+                               float &overlayAlpha) {
   const float minDim = static_cast<float>(std::min(width, height));
-  const float patch = std::max(140.0f, std::min(360.0f, minDim * 0.2315f));
-  const float gap = std::max(5.0f, patch * 0.12f);
-  const float margin = std::max(12.0f, minDim * 0.025f);
+  const float patch =
+      kOverlayPatchAtReference * (minDim / kOverlayReferenceHeight);
+  const float gap = patch * 0.12f;
+  const float margin = minDim * 0.025f;
   const float left = static_cast<float>(width) - margin - patch;
   const float shadowTop = static_cast<float>(height) - margin - patch;
   const float highlightTop = shadowTop - gap - patch;
@@ -878,11 +882,13 @@ inline float3 drawColorPatches(float3 out, int x, int y, int width, int height,
 
   if (xf >= left && xf <= left + patch && yf >= highlightTop &&
       yf <= highlightTop + patch) {
+    overlayAlpha = 1.0f;
     return highlightColor;
   }
 
   if (xf >= left && xf <= left + patch && yf >= shadowTop &&
       yf <= shadowTop + patch) {
+    overlayAlpha = 1.0f;
     return shadowColor;
   }
 
@@ -897,15 +903,17 @@ inline float lineAlpha(float curveY, float screenY, float halfThickness,
 
 inline float3 overlayRgbLine(float3 current, float curveY, float screenY,
                              float3 color, float halfThickness,
-                             float falloff) {
+                             float falloff, float &overlayAlpha) {
   const float alpha = lineAlpha(curveY, screenY, halfThickness, falloff);
-  return make_float3(current.x * (1.0f - alpha) + color.x * alpha,
-                     current.y * (1.0f - alpha) + color.y * alpha,
-                     current.z * (1.0f - alpha) + color.z * alpha);
+  if (alpha <= 0.0f) {
+    return current;
+  }
+  overlayAlpha = 1.0f;
+  return color;
 }
 
 inline float3 drawSatCurve(float3 out, int x, int y, int width, int height,
-                           const MCVectorParams &p) {
+                           const MCVectorParams &p, float &overlayAlpha) {
   if (!p.enableSaturation || !p.showSatCurve || width <= 0 || height <= 0) {
     return out;
   }
@@ -921,9 +929,9 @@ inline float3 drawSatCurve(float3 out, int x, int y, int width, int height,
   const float sMult = applyBezier(xf, p.satLow, p.satMid, p.satHigh) *
                       effGlobalSat;
   const float baseCurve = (1.0f + (sMult - 1.0f) * p.satLumMask) * 0.5f;
-  const float halfThickness = 5.0f / static_cast<float>(height);
+  const float halfThickness = kOverlayLineHalfThickness;
   const float spacing = halfThickness * 2.0f;
-  const float falloff = 1.0f / static_cast<float>(height);
+  const float falloff = kOverlayLineFalloff;
   const float3 redLine = encodeOverlayColor(make_float3(1.0f, 0.0f, 0.0f),
                                             p.pivotPreset);
   const float3 greenLine = encodeOverlayColor(make_float3(0.0f, 1.0f, 0.0f),
@@ -932,15 +940,16 @@ inline float3 drawSatCurve(float3 out, int x, int y, int width, int height,
                                              p.pivotPreset);
 
   out = overlayRgbLine(out, baseCurve + spacing, yf, redLine, halfThickness,
-                       falloff);
-  out = overlayRgbLine(out, baseCurve, yf, greenLine, halfThickness, falloff);
+                       falloff, overlayAlpha);
+  out = overlayRgbLine(out, baseCurve, yf, greenLine, halfThickness, falloff,
+                       overlayAlpha);
   out = overlayRgbLine(out, baseCurve - spacing, yf, blueLine, halfThickness,
-                       falloff);
+                       falloff, overlayAlpha);
   return out;
 }
 
 inline float3 drawZoneCurve(float3 out, int x, int y, int width, int height,
-                            const MCVectorParams &p) {
+                            const MCVectorParams &p, float &overlayAlpha) {
   if (!p.enableZoneSaturation || !p.showZoneCurve || width <= 0 ||
       height <= 0) {
     return out;
@@ -950,11 +959,9 @@ inline float3 drawZoneCurve(float3 out, int x, int y, int width, int height,
   const float yf = static_cast<float>(y) / static_cast<float>(height);
   const float gamma = 0.4101205819200422f;
   const float xTone = std::pow(clampf(xf, 0.0f, 1.0f), gamma);
-  const float halfThickness = 5.0f / static_cast<float>(height);
+  const float halfThickness = kOverlayLineHalfThickness;
   const float spacing = halfThickness * 2.0f;
-  const float falloff = 1.0f / static_cast<float>(height);
-  const float3 pivotColor =
-      encodeOverlayColor(make_float3(0.72f, 0.72f, 0.72f), p.pivotPreset);
+  const float falloff = kOverlayLineFalloff;
   const float3 redLine = encodeOverlayColor(make_float3(1.0f, 0.0f, 0.0f),
                                             p.pivotPreset);
   const float3 greenLine = encodeOverlayColor(make_float3(0.0f, 1.0f, 0.0f),
@@ -962,28 +969,34 @@ inline float3 drawZoneCurve(float3 out, int x, int y, int width, int height,
   const float3 blueLine = encodeOverlayColor(make_float3(0.0f, 0.0f, 1.0f),
                                              p.pivotPreset);
 
-  const float pivotX = clampf(p.zonePivot, 0.0f, 1.0f);
-  const float pivotDx = std::fabs(xf - pivotX) * static_cast<float>(width);
-  const float pivotDy = std::fabs(yf - 0.5f) * static_cast<float>(height);
-  const float pivotDot =
-      clampf(1.0f - (std::sqrt(pivotDx * pivotDx + pivotDy * pivotDy) - 3.0f) /
-                         2.0f,
-             0.0f, 1.0f);
-  out = make_float3(out.x * (1.0f - pivotDot) + pivotColor.x * pivotDot,
-                    out.y * (1.0f - pivotDot) + pivotColor.y * pivotDot,
-                    out.z * (1.0f - pivotDot) + pivotColor.z * pivotDot);
-
   const float satMult = zoneSatMultiplier(xTone, p);
   const float curve = clampf(0.5f + (satMult - 1.0f) * 0.5f, 0.0f, 1.0f);
   out = overlayRgbLine(out, curve + spacing, yf, redLine, halfThickness,
-                       falloff);
-  out = overlayRgbLine(out, curve, yf, greenLine, halfThickness, falloff);
-  return overlayRgbLine(out, curve - spacing, yf, blueLine, halfThickness,
-                        falloff);
+                       falloff, overlayAlpha);
+  out = overlayRgbLine(out, curve, yf, greenLine, halfThickness, falloff,
+                       overlayAlpha);
+  out = overlayRgbLine(out, curve - spacing, yf, blueLine, halfThickness,
+                       falloff, overlayAlpha);
+
+  const float pivotX = clampf(p.zonePivot, 0.0f, 1.0f);
+  const float pivotTone = std::pow(clampf(pivotX, 0.0f, 1.0f), gamma);
+  const float pivotSatMult = zoneSatMultiplier(pivotTone, p);
+  const float pivotCurve =
+      clampf(0.5f + (pivotSatMult - 1.0f) * 0.5f, 0.0f, 1.0f);
+  const float barHalfWidth = kOverlayLineHalfThickness;
+  const float barHalfHeight = kOverlayLineHalfThickness * 8.0f;
+  if (std::fabs(xf - pivotX) <= barHalfWidth &&
+      std::fabs(yf - pivotCurve) <= barHalfHeight) {
+    overlayAlpha = 1.0f;
+    return encodeOverlayColor(make_float3(0.72f, 0.72f, 0.72f),
+                              p.pivotPreset);
+  }
+
+  return out;
 }
 
 inline float3 drawToneCurve(float3 out, int x, int y, int width, int height,
-                            const MCVectorParams &p) {
+                            const MCVectorParams &p, float &overlayAlpha) {
   if (!p.enableSplitTone || !p.showToneCurve || width <= 0 || height <= 0) {
     return out;
   }
@@ -993,17 +1006,20 @@ inline float3 drawToneCurve(float3 out, int x, int y, int width, int height,
   float3 ramp = make_float3(rampValue, rampValue, rampValue);
   ramp = applySplitTone(ramp, p);
 
-  const float halfThickness = 5.0f / static_cast<float>(height);
-  const float falloff = 1.0f / static_cast<float>(height);
+  const float halfThickness = kOverlayLineHalfThickness;
+  const float falloff = kOverlayLineFalloff;
   const float3 redLine = encodeOverlayColor(make_float3(1.0f, 0.0f, 0.0f),
                                             p.pivotPreset);
   const float3 greenLine = encodeOverlayColor(make_float3(0.0f, 1.0f, 0.0f),
                                               p.pivotPreset);
   const float3 blueLine = encodeOverlayColor(make_float3(0.0f, 0.0f, 1.0f),
                                              p.pivotPreset);
-  out = overlayRgbLine(out, ramp.x, screenY, redLine, halfThickness, falloff);
-  out = overlayRgbLine(out, ramp.y, screenY, greenLine, halfThickness, falloff);
-  out = overlayRgbLine(out, ramp.z, screenY, blueLine, halfThickness, falloff);
+  out = overlayRgbLine(out, ramp.x, screenY, redLine, halfThickness, falloff,
+                       overlayAlpha);
+  out = overlayRgbLine(out, ramp.y, screenY, greenLine, halfThickness, falloff,
+                       overlayAlpha);
+  out = overlayRgbLine(out, ramp.z, screenY, blueLine, halfThickness, falloff,
+                       overlayAlpha);
 
   const float shadowMix = p.shadowMix * 0.6f;
   const float highlightMix = p.highlightMix * 0.6f;
@@ -1028,7 +1044,7 @@ inline float3 drawToneCurve(float3 out, int x, int y, int width, int height,
                                                  p.highlightCurveBias),
                           p.pivotPreset);
   return drawColorPatches(out, x, y, width, height, shadowColor,
-                          highlightColor);
+                          highlightColor, overlayAlpha);
 }
 
 } // namespace mcvector

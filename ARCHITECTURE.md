@@ -7,11 +7,11 @@ Input RGBA
   -> OFX wrapper
   -> parameter snapshot
   -> CPU fallback, Metal, or CUDA backend
-  -> parallel RGB processing
-       split-tone branch
-       curves saturation branch
-       zone saturation branch
-  -> branch deltas combined over original RGB
+  -> hybrid RGB processing
+       split-tone serial base
+       curves saturation branch from split RGB
+       zone saturation branch from split RGB
+  -> saturation deltas combined over split RGB
   -> optional curve overlays and split-tone color patches
   -> Output RGBA
 ```
@@ -32,19 +32,19 @@ conversion selector.
 
 ## Processing Model
 
-Vector combines three branches in parallel:
+Vector uses a hybrid serial/parallel model:
 
 ```text
-base RGB -> Split Tone        -> split-tone delta
-base RGB -> Curves Saturation -> saturation delta
-base RGB -> Zone Saturation   -> zone saturation delta
-base RGB + split-tone delta + saturation delta + zone delta -> output RGB
+base RGB -> Split Tone -> split RGB
+split RGB -> Curves Saturation -> saturation delta
+split RGB -> Zone Saturation   -> zone saturation delta
+split RGB + saturation delta + zone delta -> output RGB
 ```
 
-This avoids a serial dependency where saturation changes would alter the
-split-tone input or split tone would alter the saturation curve response.
-Zone saturation follows the same rule: it reads the original RGB signal and
-contributes only its own delta to the final result.
+Split tone establishes the color-separated base first. Curves Saturation and
+Zone Saturation then run in parallel from that same split RGB base, so the two
+saturation branches remain independent from each other while responding to the
+color separation created by split tone.
 
 ## GPU Parity
 
