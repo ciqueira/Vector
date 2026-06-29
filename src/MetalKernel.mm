@@ -23,7 +23,7 @@ struct MCVectorParams {
   int showSatCurve;
   int showToneCurve;
   int showZoneCurve;
-  int _pad2;
+  int saturationModelSpace;
 
   float satLow;
   float satMid;
@@ -85,16 +85,287 @@ float3 applyRgbDirectSat(float3 rgb, float satMult) {
   return float3(neutral) + (rgb - float3(neutral)) * satMult;
 }
 
-float3 applyCurvesSaturation(float3 in, constant MCVectorParams &p) {
-  float satVal = rgbDirectSatValue(in);
+constant float kPi = 3.141592653589f;
+constant float kEpsilon = 1.0e-10f;
+constant float kOklabNeutralEpsilon = 2.0e-4f;
+
+float3 adaptXyzD65ToD60(float3 xyz);
+
+float wrapUnit(float value) {
+  value = fmod(value, 1.0f);
+  return value < 0.0f ? value + 1.0f : value;
+}
+
+float circularDelta(float from, float to) {
+  return fmod(to - from + 1.5f, 1.0f) - 0.5f;
+}
+
+float smoothstep01(float edge0, float edge1, float value) {
+  float t = clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
+
+float rgbOpponentHue(float3 rgb, float fallbackHue) {
+  float u = (2.0f * rgb.x - rgb.y - rgb.z) / sqrt(6.0f);
+  float v = (rgb.y - rgb.z) / sqrt(2.0f);
+  if (length(float2(u, v)) < 1.0e-7f) return fallbackHue;
+  return wrapUnit(atan2(v, u) / (2.0f * kPi));
+}
+
+float stableBlueMask(float3 rgb, int inputCs) {
+  if (inputCs == 0) return 0.0f;
+
+  float opponentHue = rgbOpponentHue(rgb, 2.0f / 3.0f);
+  float distance = abs(circularDelta(2.0f / 3.0f, opponentHue));
+  return 1.0f - smoothstep01(25.0f / 360.0f, 75.0f / 360.0f, distance);
+}
+
+float3 rgbToXyz(float3 rgb, int inputCs) {
+  if (inputCs == 0) {
+    return float3(rgb.x * 0.66245418f + rgb.y * 0.13400421f +
+                      rgb.z * 0.15618766f,
+                  rgb.x * 0.27222872f + rgb.y * 0.67408177f +
+                      rgb.z * 0.05368952f,
+                  rgb.x * -0.00557465f + rgb.y * 0.00406073f +
+                      rgb.z * 1.01033910f);
+  }
+  if (inputCs == 1) {
+    return float3(rgb.x * 0.70062239f + rgb.y * 0.14877482f +
+                      rgb.z * 0.10105872f,
+                  rgb.x * 0.27411851f + rgb.y * 0.87363190f +
+                      rgb.z * -0.14775041f,
+                  rgb.x * -0.09896291f + rgb.y * -0.13789533f +
+                      rgb.z * 1.32591599f);
+  }
+  if (inputCs == 2) {
+    return float3(rgb.x * 0.63800764f + rgb.y * 0.21470386f +
+                      rgb.z * 0.09774445f,
+                  rgb.x * 0.29195377f + rgb.y * 0.82384104f +
+                      rgb.z * -0.11579482f,
+                  rgb.x * 0.00279827f + rgb.y * -0.06703423f +
+                      rgb.z * 1.15329373f);
+  }
+  if (inputCs == 3) {
+    return float3(rgb.x * 0.70485832f + rgb.y * 0.12976030f +
+                      rgb.z * 0.11583731f,
+                  rgb.x * 0.25452418f + rgb.y * 0.78147773f +
+                      rgb.z * -0.03600191f,
+                  rgb.z * 1.08905775f);
+  }
+  return rgb;
+}
+
+float3 xyzToRgb(float3 xyz, int outputCs) {
+  if (outputCs == 0) {
+    return float3(xyz.x * 1.64102338f + xyz.y * -0.32480329f +
+                      xyz.z * -0.23642470f,
+                  xyz.x * -0.66366286f + xyz.y * 1.61533159f +
+                      xyz.z * 0.01675635f,
+                  xyz.x * 0.01172189f + xyz.y * -0.00828444f +
+                      xyz.z * 0.98839486f);
+  }
+  if (outputCs == 1) {
+    return float3(xyz.x * 1.51667204f + xyz.y * -0.28147805f +
+                      xyz.z * -0.14696363f,
+                  xyz.x * -0.46491710f + xyz.y * 1.25142378f +
+                      xyz.z * 0.17488461f,
+                  xyz.x * 0.06484905f + xyz.y * 0.10913934f +
+                      xyz.z * 0.76141462f);
+  }
+  if (outputCs == 2) {
+    return float3(xyz.x * 1.78906548f + xyz.y * -0.48253384f +
+                      xyz.z * -0.20007578f,
+                  xyz.x * -0.63984859f + xyz.y * 1.39639986f +
+                      xyz.z * 0.19443229f,
+                  xyz.x * -0.04153153f + xyz.y * 0.08233536f +
+                      xyz.z * 0.87886840f);
+  }
+  if (outputCs == 3) {
+    return float3(xyz.x * 1.50921547f + xyz.y * -0.25059735f +
+                      xyz.z * -0.16881148f,
+                  xyz.x * -0.49154545f + xyz.y * 1.36124555f +
+                      xyz.z * 0.09728294f,
+                  xyz.z * 0.91822495f);
+  }
+  return xyz;
+}
+
+float3 adaptXyzD60ToD65(float3 xyz) {
+  return float3(xyz.x * 0.987224008703f + xyz.y * -0.006113228607f +
+                    xyz.z * 0.015953288336f,
+                xyz.x * -0.007598371812f + xyz.y * 1.001861484740f +
+                    xyz.z * 0.005330035791f,
+                xyz.x * 0.003072577059f + xyz.y * -0.005095961511f +
+                    xyz.z * 1.081680603066f);
+}
+
+float signedCubeRoot(float v) {
+  return v < 0.0f ? -pow(-v, 1.0f / 3.0f) : pow(v, 1.0f / 3.0f);
+}
+
+float3 xyzToOklab(float3 xyz) {
+  float3 lms = float3(
+      xyz.x * 0.8189330101f + xyz.y * 0.3618667424f +
+          xyz.z * -0.1288597137f,
+      xyz.x * 0.0329845436f + xyz.y * 0.9293118715f +
+          xyz.z * 0.0361456387f,
+      xyz.x * 0.0482003018f + xyz.y * 0.2643662691f +
+          xyz.z * 0.6338517070f);
+  float3 lmsPrime = float3(signedCubeRoot(lms.x), signedCubeRoot(lms.y),
+                           signedCubeRoot(lms.z));
+  return float3(lmsPrime.x * 0.2104542553f +
+                    lmsPrime.y * 0.7936177850f +
+                    lmsPrime.z * -0.0040720468f,
+                lmsPrime.x * 1.9779984951f +
+                    lmsPrime.y * -2.4285922050f +
+                    lmsPrime.z * 0.4505937099f,
+                lmsPrime.x * 0.0259040371f +
+                    lmsPrime.y * 0.7827717662f +
+                    lmsPrime.z * -0.8086757660f);
+}
+
+float3 oklabToXyz(float3 oklab) {
+  float3 lmsPrime = float3(
+      oklab.x + oklab.y * 0.3963377774f + oklab.z * 0.2158037573f,
+      oklab.x + oklab.y * -0.1055613458f + oklab.z * -0.0638541728f,
+      oklab.x + oklab.y * -0.0894841775f + oklab.z * -1.2914855480f);
+  float3 lms = lmsPrime * lmsPrime * lmsPrime;
+  return float3(lms.x * 1.2270138511f + lms.y * -0.5577999807f +
+                    lms.z * 0.2812561490f,
+                lms.x * -0.0405801784f + lms.y * 1.1122568696f +
+                    lms.z * -0.0716766787f,
+                lms.x * -0.0763812845f + lms.y * -0.4214819784f +
+                    lms.z * 1.5861632239f);
+}
+
+float3 neutralizeSmallOklabChroma(float3 oklab) {
+  float chroma = length(oklab.yz);
+  float threshold = kOklabNeutralEpsilon * max(1.0f, abs(oklab.x));
+  if (chroma <= threshold) {
+    oklab.y = 0.0f;
+    oklab.z = 0.0f;
+  }
+  return oklab;
+}
+
+float3 oklabToOklch(float3 lab) {
+  float chroma = length(lab.yz);
+  float hue = atan2(lab.z, lab.y);
+  if (hue < 0.0f) hue += 2.0f * kPi;
+  return float3(hue / (2.0f * kPi), chroma, lab.x);
+}
+
+float3 oklchToOklab(float3 lch) {
+  float hue = lch.x * 2.0f * kPi;
+  return float3(lch.z, lch.y * cos(hue), lch.y * sin(hue));
+}
+
+float3 rgbToChen(float3 rgb) {
+  float rho = length(rgb);
+  if (rho < kEpsilon) return float3(0.0f);
+
+  float thetaNum = rgb.x - 0.5f * rgb.y - 0.5f * rgb.z;
+  float thetaDenSq = rgb.x * rgb.x + rgb.y * rgb.y + rgb.z * rgb.z -
+                     rgb.x * rgb.y - rgb.x * rgb.z - rgb.y * rgb.z;
+  float thetaDen = sqrt(max(0.0f, thetaDenSq));
+  float theta = 0.0f;
+  if (thetaDen >= kEpsilon) {
+    theta = acos(clamp(thetaNum / thetaDen, -1.0f, 1.0f));
+    if (rgb.y < rgb.z) theta = 2.0f * kPi - theta;
+  }
+
+  float phiDen = sqrt(3.0f) * rho;
+  float phi = phiDen < kEpsilon
+                  ? 0.0f
+                  : acos(clamp((rgb.x + rgb.y + rgb.z) / phiDen, -1.0f,
+                               1.0f));
+  return float3(theta / (2.0f * kPi), phi, rho);
+}
+
+float3 chenToRgb(float3 chen) {
+  float theta = chen.x * 2.0f * kPi;
+  float phi = chen.y;
+  float rho = chen.z;
+  if (rho < kEpsilon) return float3(0.0f);
+
+  return float3(
+      rho * (0.81649658f * sin(phi) * cos(theta) +
+             0.57735027f * cos(phi)),
+      rho * (-0.40824829f * sin(phi) * cos(theta) +
+             0.70710678f * sin(phi) * sin(theta) +
+             0.57735027f * cos(phi)),
+      rho * (-0.40824829f * sin(phi) * cos(theta) -
+             0.70710678f * sin(phi) * sin(theta) +
+             0.57735027f * cos(phi)));
+}
+
+float3 rgbToOklchModel(float3 rgb, int inputCs) {
+  float3 xyz = rgbToXyz(rgb, inputCs);
+  if (inputCs == 0) xyz = adaptXyzD60ToD65(xyz);
+  return oklabToOklch(neutralizeSmallOklabChroma(xyzToOklab(xyz)));
+}
+
+float3 oklchModelToRgb(float3 oklch, int inputCs) {
+  float3 xyz = oklabToXyz(oklchToOklab(oklch));
+  if (inputCs == 0) xyz = adaptXyzD65ToD60(xyz);
+  return xyzToRgb(xyz, inputCs);
+}
+
+float3 convertSaturationModel(float3 color, int model, bool toModel,
+                              int inputCs) {
+  if (model == 1) return toModel ? rgbToChen(color) : chenToRgb(color);
+  if (model == 2) {
+    return toModel ? rgbToOklchModel(color, inputCs)
+                   : oklchModelToRgb(color, inputCs);
+  }
+  return color;
+}
+
+int normalizedSaturationModel(int model) {
+  return clamp(model, 0, 2);
+}
+
+float modelSatValue(float3 rgb, int model, int inputCs) {
+  model = normalizedSaturationModel(model);
+  if (model == 0) return rgbDirectSatValue(rgb);
+  return convertSaturationModel(rgb, model, true, inputCs).y;
+}
+
+float curveSatMultiplier(float satVal, constant MCVectorParams &p) {
   float effGlobalSat = p.satGlobal;
   if (effGlobalSat > 1.0f) {
     effGlobalSat = 1.0f + (effGlobalSat - 1.0f) * 0.5f;
   }
   float satMult = applyBezier(satVal, p.satLow, p.satMid, p.satHigh) *
                   effGlobalSat;
-  satMult = 1.0f + (satMult - 1.0f) * p.satLumMask;
-  return applyRgbDirectSat(in, satMult);
+  return 1.0f + (satMult - 1.0f) * p.satLumMask;
+}
+
+float3 applyModelSat(float3 rgb, float satMult, int model, int inputCs) {
+  model = normalizedSaturationModel(model);
+  if (model == 0) return applyRgbDirectSat(rgb, satMult);
+
+  float3 modelColor = convertSaturationModel(rgb, model, true, inputCs);
+  modelColor.y = max(0.0f, modelColor.y * satMult);
+  return convertSaturationModel(modelColor, model, false, inputCs);
+}
+
+float3 applyCurvesSaturation(float3 in, constant MCVectorParams &p) {
+  int model = normalizedSaturationModel(p.saturationModelSpace);
+  int inputCs = p.pivotPreset;
+  float satMult = curveSatMultiplier(modelSatValue(in, model, inputCs), p);
+  float3 out = applyModelSat(in, satMult, model, inputCs);
+
+  if (model == 2) {
+    float blueMask = stableBlueMask(in, inputCs);
+    if (blueMask > 0.0f) {
+      float sphericalMult = curveSatMultiplier(modelSatValue(in, 1, inputCs),
+                                               p);
+      float3 sphericalOut = applyModelSat(in, sphericalMult, 1, inputCs);
+      out = mix(out, sphericalOut, blueMask);
+    }
+  }
+  return out;
 }
 
 float zoneToneValue(float3 rgb) {
@@ -126,7 +397,19 @@ float zoneSatMultiplier(float x, constant MCVectorParams &p) {
 
 float3 applyZoneSaturation(float3 in, constant MCVectorParams &p) {
   float x = zoneToneValue(in);
-  return applyRgbDirectSat(in, zoneSatMultiplier(x, p));
+  int model = normalizedSaturationModel(p.saturationModelSpace);
+  int inputCs = p.pivotPreset;
+  float satMult = zoneSatMultiplier(x, p);
+  float3 out = applyModelSat(in, satMult, model, inputCs);
+
+  if (model == 2) {
+    float blueMask = stableBlueMask(in, inputCs);
+    if (blueMask > 0.0f) {
+      float3 sphericalOut = applyModelSat(in, satMult, 1, inputCs);
+      out = mix(out, sphericalOut, blueMask);
+    }
+  }
+  return out;
 }
 
 float splitCurveOffset(float curveBias) {

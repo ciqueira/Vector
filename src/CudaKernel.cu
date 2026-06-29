@@ -6,6 +6,10 @@
 
 #include <cuda_runtime.h>
 
+#define MCVECTOR_PI 3.141592653589f
+#define MCVECTOR_EPSILON 1.0e-10f
+#define MCVECTOR_OKLAB_NEUTRAL_EPSILON 2.0e-4f
+
 __device__ inline float clampf(float v, float lo, float hi) {
   return fminf(fmaxf(v, lo), hi);
 }
@@ -13,6 +17,8 @@ __device__ inline float clampf(float v, float lo, float hi) {
 __device__ inline float3 f3(float x, float y, float z) {
   return make_float3(x, y, z);
 }
+
+__device__ inline float3 adaptXyzD65ToD60(float3 xyz);
 
 __device__ inline float3 add3(float3 a, float3 b) {
   return f3(a.x + b.x, a.y + b.y, a.z + b.z);
@@ -72,18 +78,296 @@ __device__ inline float3 applyRgbDirectSat(float3 rgb, float satMult) {
             neutral + (rgb.z - neutral) * satMult);
 }
 
-__device__ inline float3 applyCurvesSaturation(float3 in,
-                                               MCVectorParams p) {
-  const float satVal = rgbDirectSatValue(in);
+__device__ inline float wrapUnit(float value) {
+  value = fmodf(value, 1.0f);
+  return value < 0.0f ? value + 1.0f : value;
+}
+
+__device__ inline float circularDelta(float from, float to) {
+  return fmodf(to - from + 1.5f, 1.0f) - 0.5f;
+}
+
+__device__ inline float smoothstep01(float edge0, float edge1, float value) {
+  const float t = clampf((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
+
+__device__ inline float rgbOpponentHue(float3 rgb, float fallbackHue) {
+  const float u = (2.0f * rgb.x - rgb.y - rgb.z) / sqrtf(6.0f);
+  const float v = (rgb.y - rgb.z) / sqrtf(2.0f);
+  if (sqrtf(u * u + v * v) < 1.0e-7f)
+    return fallbackHue;
+  return wrapUnit(atan2f(v, u) / (2.0f * MCVECTOR_PI));
+}
+
+__device__ inline float stableBlueMask(float3 rgb, int inputCs) {
+  if (inputCs == 0)
+    return 0.0f;
+
+  const float opponentHue = rgbOpponentHue(rgb, 2.0f / 3.0f);
+  const float distance = fabsf(circularDelta(2.0f / 3.0f, opponentHue));
+  return 1.0f - smoothstep01(25.0f / 360.0f, 75.0f / 360.0f, distance);
+}
+
+__device__ inline float3 rgbToXyz(float3 rgb, int inputCs) {
+  if (inputCs == 0)
+    return f3(rgb.x * 0.66245418f + rgb.y * 0.13400421f +
+                  rgb.z * 0.15618766f,
+              rgb.x * 0.27222872f + rgb.y * 0.67408177f +
+                  rgb.z * 0.05368952f,
+              rgb.x * -0.00557465f + rgb.y * 0.00406073f +
+                  rgb.z * 1.01033910f);
+  if (inputCs == 1)
+    return f3(rgb.x * 0.70062239f + rgb.y * 0.14877482f +
+                  rgb.z * 0.10105872f,
+              rgb.x * 0.27411851f + rgb.y * 0.87363190f +
+                  rgb.z * -0.14775041f,
+              rgb.x * -0.09896291f + rgb.y * -0.13789533f +
+                  rgb.z * 1.32591599f);
+  if (inputCs == 2)
+    return f3(rgb.x * 0.63800764f + rgb.y * 0.21470386f +
+                  rgb.z * 0.09774445f,
+              rgb.x * 0.29195377f + rgb.y * 0.82384104f +
+                  rgb.z * -0.11579482f,
+              rgb.x * 0.00279827f + rgb.y * -0.06703423f +
+                  rgb.z * 1.15329373f);
+  if (inputCs == 3)
+    return f3(rgb.x * 0.70485832f + rgb.y * 0.12976030f +
+                  rgb.z * 0.11583731f,
+              rgb.x * 0.25452418f + rgb.y * 0.78147773f +
+                  rgb.z * -0.03600191f,
+              rgb.z * 1.08905775f);
+  return rgb;
+}
+
+__device__ inline float3 xyzToRgb(float3 xyz, int outputCs) {
+  if (outputCs == 0)
+    return f3(xyz.x * 1.64102338f + xyz.y * -0.32480329f +
+                  xyz.z * -0.23642470f,
+              xyz.x * -0.66366286f + xyz.y * 1.61533159f +
+                  xyz.z * 0.01675635f,
+              xyz.x * 0.01172189f + xyz.y * -0.00828444f +
+                  xyz.z * 0.98839486f);
+  if (outputCs == 1)
+    return f3(xyz.x * 1.51667204f + xyz.y * -0.28147805f +
+                  xyz.z * -0.14696363f,
+              xyz.x * -0.46491710f + xyz.y * 1.25142378f +
+                  xyz.z * 0.17488461f,
+              xyz.x * 0.06484905f + xyz.y * 0.10913934f +
+                  xyz.z * 0.76141462f);
+  if (outputCs == 2)
+    return f3(xyz.x * 1.78906548f + xyz.y * -0.48253384f +
+                  xyz.z * -0.20007578f,
+              xyz.x * -0.63984859f + xyz.y * 1.39639986f +
+                  xyz.z * 0.19443229f,
+              xyz.x * -0.04153153f + xyz.y * 0.08233536f +
+                  xyz.z * 0.87886840f);
+  if (outputCs == 3)
+    return f3(xyz.x * 1.50921547f + xyz.y * -0.25059735f +
+                  xyz.z * -0.16881148f,
+              xyz.x * -0.49154545f + xyz.y * 1.36124555f +
+                  xyz.z * 0.09728294f,
+              xyz.z * 0.91822495f);
+  return xyz;
+}
+
+__device__ inline float3 adaptXyzD60ToD65(float3 xyz) {
+  return f3(xyz.x * 0.987224008703f + xyz.y * -0.006113228607f +
+                xyz.z * 0.015953288336f,
+            xyz.x * -0.007598371812f + xyz.y * 1.001861484740f +
+                xyz.z * 0.005330035791f,
+            xyz.x * 0.003072577059f + xyz.y * -0.005095961511f +
+                xyz.z * 1.081680603066f);
+}
+
+__device__ inline float signedCubeRoot(float v) {
+  return v < 0.0f ? -powf(-v, 1.0f / 3.0f) : powf(v, 1.0f / 3.0f);
+}
+
+__device__ inline float3 xyzToOklab(float3 xyz) {
+  const float3 lms =
+      f3(xyz.x * 0.8189330101f + xyz.y * 0.3618667424f +
+             xyz.z * -0.1288597137f,
+         xyz.x * 0.0329845436f + xyz.y * 0.9293118715f +
+             xyz.z * 0.0361456387f,
+         xyz.x * 0.0482003018f + xyz.y * 0.2643662691f +
+             xyz.z * 0.6338517070f);
+  const float3 lmsPrime =
+      f3(signedCubeRoot(lms.x), signedCubeRoot(lms.y),
+         signedCubeRoot(lms.z));
+  return f3(lmsPrime.x * 0.2104542553f +
+                lmsPrime.y * 0.7936177850f +
+                lmsPrime.z * -0.0040720468f,
+            lmsPrime.x * 1.9779984951f +
+                lmsPrime.y * -2.4285922050f +
+                lmsPrime.z * 0.4505937099f,
+            lmsPrime.x * 0.0259040371f +
+                lmsPrime.y * 0.7827717662f +
+                lmsPrime.z * -0.8086757660f);
+}
+
+__device__ inline float3 oklabToXyz(float3 oklab) {
+  const float3 lmsPrime =
+      f3(oklab.x + oklab.y * 0.3963377774f +
+             oklab.z * 0.2158037573f,
+         oklab.x + oklab.y * -0.1055613458f +
+             oklab.z * -0.0638541728f,
+         oklab.x + oklab.y * -0.0894841775f +
+             oklab.z * -1.2914855480f);
+  const float3 lms = f3(lmsPrime.x * lmsPrime.x * lmsPrime.x,
+                        lmsPrime.y * lmsPrime.y * lmsPrime.y,
+                        lmsPrime.z * lmsPrime.z * lmsPrime.z);
+  return f3(lms.x * 1.2270138511f + lms.y * -0.5577999807f +
+                lms.z * 0.2812561490f,
+            lms.x * -0.0405801784f + lms.y * 1.1122568696f +
+                lms.z * -0.0716766787f,
+            lms.x * -0.0763812845f + lms.y * -0.4214819784f +
+                lms.z * 1.5861632239f);
+}
+
+__device__ inline float3 neutralizeSmallOklabChroma(float3 oklab) {
+  const float chroma = sqrtf(oklab.y * oklab.y + oklab.z * oklab.z);
+  const float threshold =
+      MCVECTOR_OKLAB_NEUTRAL_EPSILON * fmaxf(1.0f, fabsf(oklab.x));
+  if (chroma <= threshold) {
+    oklab.y = 0.0f;
+    oklab.z = 0.0f;
+  }
+  return oklab;
+}
+
+__device__ inline float3 oklabToOklch(float3 lab) {
+  const float chroma = sqrtf(lab.y * lab.y + lab.z * lab.z);
+  float hue = atan2f(lab.z, lab.y);
+  if (hue < 0.0f)
+    hue += 2.0f * MCVECTOR_PI;
+  return f3(hue / (2.0f * MCVECTOR_PI), chroma, lab.x);
+}
+
+__device__ inline float3 oklchToOklab(float3 lch) {
+  const float hue = lch.x * 2.0f * MCVECTOR_PI;
+  return f3(lch.z, lch.y * cosf(hue), lch.y * sinf(hue));
+}
+
+__device__ inline float3 rgbToChen(float3 rgb) {
+  const float rho = sqrtf(rgb.x * rgb.x + rgb.y * rgb.y + rgb.z * rgb.z);
+  if (rho < MCVECTOR_EPSILON)
+    return f3(0.0f, 0.0f, 0.0f);
+
+  const float thetaNum = rgb.x - 0.5f * rgb.y - 0.5f * rgb.z;
+  const float thetaDenSq = rgb.x * rgb.x + rgb.y * rgb.y + rgb.z * rgb.z -
+                           rgb.x * rgb.y - rgb.x * rgb.z - rgb.y * rgb.z;
+  const float thetaDen = sqrtf(fmaxf(0.0f, thetaDenSq));
+  float theta = 0.0f;
+  if (thetaDen >= MCVECTOR_EPSILON) {
+    theta = acosf(clampf(thetaNum / thetaDen, -1.0f, 1.0f));
+    if (rgb.y < rgb.z)
+      theta = 2.0f * MCVECTOR_PI - theta;
+  }
+
+  const float phiDen = sqrtf(3.0f) * rho;
+  const float phi =
+      phiDen < MCVECTOR_EPSILON
+          ? 0.0f
+          : acosf(clampf((rgb.x + rgb.y + rgb.z) / phiDen, -1.0f, 1.0f));
+  return f3(theta / (2.0f * MCVECTOR_PI), phi, rho);
+}
+
+__device__ inline float3 chenToRgb(float3 chen) {
+  const float theta = chen.x * 2.0f * MCVECTOR_PI;
+  const float phi = chen.y;
+  const float rho = chen.z;
+  if (rho < MCVECTOR_EPSILON)
+    return f3(0.0f, 0.0f, 0.0f);
+
+  return f3(
+      rho * (0.81649658f * sinf(phi) * cosf(theta) +
+             0.57735027f * cosf(phi)),
+      rho * (-0.40824829f * sinf(phi) * cosf(theta) +
+             0.70710678f * sinf(phi) * sinf(theta) +
+             0.57735027f * cosf(phi)),
+      rho * (-0.40824829f * sinf(phi) * cosf(theta) -
+             0.70710678f * sinf(phi) * sinf(theta) +
+             0.57735027f * cosf(phi)));
+}
+
+__device__ inline float3 rgbToOklchModel(float3 rgb, int inputCs) {
+  float3 xyz = rgbToXyz(rgb, inputCs);
+  if (inputCs == 0)
+    xyz = adaptXyzD60ToD65(xyz);
+  return oklabToOklch(neutralizeSmallOklabChroma(xyzToOklab(xyz)));
+}
+
+__device__ inline float3 oklchModelToRgb(float3 oklch, int inputCs) {
+  float3 xyz = oklabToXyz(oklchToOklab(oklch));
+  if (inputCs == 0)
+    xyz = adaptXyzD65ToD60(xyz);
+  return xyzToRgb(xyz, inputCs);
+}
+
+__device__ inline float3 convertSaturationModel(float3 color, int model,
+                                                bool toModel,
+                                                int inputCs) {
+  if (model == 1)
+    return toModel ? rgbToChen(color) : chenToRgb(color);
+  if (model == 2)
+    return toModel ? rgbToOklchModel(color, inputCs)
+                   : oklchModelToRgb(color, inputCs);
+  return color;
+}
+
+__device__ inline int normalizedSaturationModel(int model) {
+  return min(max(model, 0), 2);
+}
+
+__device__ inline float modelSatValue(float3 rgb, int model, int inputCs) {
+  model = normalizedSaturationModel(model);
+  if (model == 0)
+    return rgbDirectSatValue(rgb);
+  return convertSaturationModel(rgb, model, true, inputCs).y;
+}
+
+__device__ inline float curveSatMultiplier(float satVal, MCVectorParams p) {
   float effGlobalSat = p.satGlobal;
   if (effGlobalSat > 1.0f) {
     effGlobalSat = 1.0f + (effGlobalSat - 1.0f) * 0.5f;
   }
-
-  float satMult =
+  const float satMult =
       applyBezier(satVal, p.satLow, p.satMid, p.satHigh) * effGlobalSat;
-  satMult = 1.0f + (satMult - 1.0f) * p.satLumMask;
-  return applyRgbDirectSat(in, satMult);
+  return 1.0f + (satMult - 1.0f) * p.satLumMask;
+}
+
+__device__ inline float3 applyModelSat(float3 rgb, float satMult, int model,
+                                       int inputCs) {
+  model = normalizedSaturationModel(model);
+  if (model == 0)
+    return applyRgbDirectSat(rgb, satMult);
+
+  float3 modelColor = convertSaturationModel(rgb, model, true, inputCs);
+  modelColor.y = fmaxf(0.0f, modelColor.y * satMult);
+  return convertSaturationModel(modelColor, model, false, inputCs);
+}
+
+__device__ inline float3 applyCurvesSaturation(float3 in,
+                                               MCVectorParams p) {
+  const int model = normalizedSaturationModel(p.saturationModelSpace);
+  const int inputCs = p.pivotPreset;
+  const float satMult =
+      curveSatMultiplier(modelSatValue(in, model, inputCs), p);
+  float3 out = applyModelSat(in, satMult, model, inputCs);
+
+  if (model == 2) {
+    const float blueMask = stableBlueMask(in, inputCs);
+    if (blueMask > 0.0f) {
+      const float sphericalMult =
+          curveSatMultiplier(modelSatValue(in, 1, inputCs), p);
+      const float3 sphericalOut = applyModelSat(in, sphericalMult, 1, inputCs);
+      out = f3(out.x + (sphericalOut.x - out.x) * blueMask,
+               out.y + (sphericalOut.y - out.y) * blueMask,
+               out.z + (sphericalOut.z - out.z) * blueMask);
+    }
+  }
+  return out;
 }
 
 __device__ inline float zoneToneValue(float3 rgb) {
@@ -117,7 +401,21 @@ __device__ inline float zoneSatMultiplier(float x, MCVectorParams p) {
 
 __device__ inline float3 applyZoneSaturation(float3 in, MCVectorParams p) {
   const float x = zoneToneValue(in);
-  return applyRgbDirectSat(in, zoneSatMultiplier(x, p));
+  const int model = normalizedSaturationModel(p.saturationModelSpace);
+  const int inputCs = p.pivotPreset;
+  const float satMult = zoneSatMultiplier(x, p);
+  float3 out = applyModelSat(in, satMult, model, inputCs);
+
+  if (model == 2) {
+    const float blueMask = stableBlueMask(in, inputCs);
+    if (blueMask > 0.0f) {
+      const float3 sphericalOut = applyModelSat(in, satMult, 1, inputCs);
+      out = f3(out.x + (sphericalOut.x - out.x) * blueMask,
+               out.y + (sphericalOut.y - out.y) * blueMask,
+               out.z + (sphericalOut.z - out.z) * blueMask);
+    }
+  }
+  return out;
 }
 
 __device__ inline float splitCurveOffset(float curveBias) {

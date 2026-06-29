@@ -35,7 +35,7 @@
 #define kPluginGrouping "MC Plugins"
 #define kPluginDescription                                                     \
   "Parallel RGB curves saturation and split tone processor. The Input Space "  \
-  "control is used only as a split-tone pivot preset."
+  "control sets the split-tone pivot preset and Metal saturation model gamut."
 #define kPluginIdentifier "com.MCVector"
 #define kPluginVersionMajor 1
 #define kPluginVersionMinor 0
@@ -45,6 +45,7 @@
 #define kSupportsMultipleClipPARs false
 
 #define kParamPivotPreset "pivotPreset"
+#define kParamSaturationModelSpace "saturationModelSpace"
 #define kParamEnableSaturation "enableSaturation"
 #define kParamSatLow "satLow"
 #define kParamSatMid "satMid"
@@ -280,6 +281,7 @@ private:
   OFX::Clip *m_DstClip;
 
   OFX::ChoiceParam *m_PivotPreset;
+  OFX::ChoiceParam *m_SaturationModelSpace;
   OFX::BooleanParam *m_EnableSaturation;
   OFX::DoubleParam *m_SatLow;
   OFX::DoubleParam *m_SatMid;
@@ -316,6 +318,7 @@ MCVectorPlugin::MCVectorPlugin(OfxImageEffectHandle handle)
   m_SrcClip = fetchClip(kOfxImageEffectSimpleSourceClipName);
 
   m_PivotPreset = fetchChoiceParam(kParamPivotPreset);
+  m_SaturationModelSpace = fetchChoiceParam(kParamSaturationModelSpace);
   m_EnableSaturation = fetchBooleanParam(kParamEnableSaturation);
   m_SatLow = fetchDoubleParam(kParamSatLow);
   m_SatMid = fetchDoubleParam(kParamSatMid);
@@ -353,6 +356,9 @@ MCVectorParams MCVectorPlugin::getActiveParams(double time) {
   int pivotPreset = 1;
   m_PivotPreset->getValueAtTime(time, pivotPreset);
   p.pivotPreset = pivotPreset;
+  int saturationModelSpace = 0;
+  m_SaturationModelSpace->getValueAtTime(time, saturationModelSpace);
+  p.saturationModelSpace = saturationModelSpace;
   p.enableSaturation = m_EnableSaturation->getValueAtTime(time) ? 1 : 0;
   p.enableZoneSaturation =
       m_EnableZoneSaturation->getValueAtTime(time) ? 1 : 0;
@@ -530,6 +536,16 @@ void MCVectorFactory::describeInContext(OFX::ImageEffectDescriptor &desc,
   pivotPreset->setDefault(1);
   page->addChild(*pivotPreset);
 
+  OFX::ChoiceParamDescriptor *saturationModelSpace =
+      desc.defineChoiceParam(kParamSaturationModelSpace);
+  saturationModelSpace->setLabels("Model/Space Type", "Model/Space Type",
+                                  "Model/Space Type");
+  saturationModelSpace->appendOption("RGB Direct");
+  saturationModelSpace->appendOption("RGB Spherical");
+  saturationModelSpace->appendOption("OKLCH");
+  saturationModelSpace->setDefault(0);
+  page->addChild(*saturationModelSpace);
+
   {
     OFX::GroupParamDescriptor *grp = desc.defineGroupParam("grpSplitTone");
     grp->setLabels("Split Tone", "Split Tone", "Split Tone");
@@ -607,7 +623,7 @@ void MCVectorFactory::describeInContext(OFX::ImageEffectDescriptor &desc,
                  *grp, *page);
     defineDouble(desc, kParamSatGlobal, "Global Sat", 1.0, 0.0, 2.0, 0.0,
                  2.0, *grp, *page);
-    defineDouble(desc, kParamSatLumMask, "Luma Mask", 1.0, 0.0, 1.0, 0.0,
+    defineDouble(desc, kParamSatLumMask, "Curve Amount", 1.0, 0.0, 1.0, 0.0,
                  1.0, *grp, *page);
 
     OFX::BooleanParamDescriptor *showCurve =
@@ -634,13 +650,13 @@ void MCVectorFactory::describeInContext(OFX::ImageEffectDescriptor &desc,
     enable->setParent(*grp);
     page->addChild(*enable);
 
-    defineDouble(desc, kParamZone, "Zone", 0.0, -1.0, 1.0, -1.0, 1.0, *grp,
-                 *page);
+    defineDouble(desc, kParamZone, "Zone Focus", 0.0, -1.0, 1.0, -1.0, 1.0,
+                 *grp, *page);
     defineDouble(desc, kParamZonePivot, "Pivot", 0.5, 0.0, 1.0, 0.0, 1.0,
                  *grp, *page);
     defineDouble(desc, kParamZonePivotWidth, "Pivot Width", 0.5, 0.0, 1.0,
                  0.0, 1.0, *grp, *page);
-    defineDouble(desc, kParamZoneStrengthSat, "Strength Sat", 0.0, -1.0, 1.0,
+    defineDouble(desc, kParamZoneStrengthSat, "Sat Strength", 0.0, -1.0, 1.0,
                  -1.0, 1.0, *grp, *page);
 
     OFX::BooleanParamDescriptor *showCurve =

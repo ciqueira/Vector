@@ -8,10 +8,11 @@ Input RGBA
   -> parameter snapshot
   -> CPU fallback, Metal, or CUDA backend
   -> parallel RGB processing
-       curves saturation branch
        split-tone branch
+       curves saturation branch
+       zone saturation branch
   -> branch deltas combined over original RGB
-  -> optional curve overlays
+  -> optional curve overlays and split-tone color patches
   -> Output RGBA
 ```
 
@@ -31,16 +32,19 @@ conversion selector.
 
 ## Processing Model
 
-Vector combines two branches in parallel:
+Vector combines three branches in parallel:
 
 ```text
-base RGB -> Curves Saturation -> saturation delta
 base RGB -> Split Tone        -> split-tone delta
-base RGB + saturation delta + split-tone delta -> output RGB
+base RGB -> Curves Saturation -> saturation delta
+base RGB -> Zone Saturation   -> zone saturation delta
+base RGB + split-tone delta + saturation delta + zone delta -> output RGB
 ```
 
 This avoids a serial dependency where saturation changes would alter the
 split-tone input or split tone would alter the saturation curve response.
+Zone saturation follows the same rule: it reads the original RGB signal and
+contributes only its own delta to the final result.
 
 ## GPU Parity
 

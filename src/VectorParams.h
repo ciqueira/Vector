@@ -13,7 +13,7 @@ typedef struct {
   int showSatCurve;
   int showToneCurve;
   int showZoneCurve;
-  int _pad2;
+  int saturationModelSpace; // 0=RGB Direct, 1=RGB Spherical, 2=OKLCH
 
   float satLow;
   float satMid;
