@@ -1,7 +1,5 @@
 # Vector
 
-[Português do Brasil](README.pt-BR.md)
-
 Vector brings look-development tools for split-tone and saturation operations
 into a single OFX. It keeps related adjustments together, uses the incoming RGB
 signal as the reference, and reduces the need to stack several small tools for
