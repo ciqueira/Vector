@@ -20,9 +20,9 @@ atualizar e gerenciar o plugin.
 
 ## Plugins Incluídos
 
-| Plugin | Versão | Distribuição | Obter Chave |
-| --- | --- | --- | --- |
-| Vector | Atual | OpenKey | [Obter Chave](https://bridge.magnociqueira.com.br/github/claim?t=vector-oss&tmpl=363f9ad5-7dec-4e29-86e6-b5923dbfb2d4&sig=ea36f997f27e41cd) |
+| Plugin | Versão | Distribuição | Chave Gratuita | Apoiar o Projeto |
+| --- | --- | --- | --- | --- |
+| Vector | Atual | OpenKey | [Obter Chave](https://bridge.magnociqueira.com.br/github/claim?t=vector-oss&tmpl=363f9ad5-7dec-4e29-86e6-b5923dbfb2d4&sig=ea36f997f27e41cd) | [Torne-se um Apoiador](https://bridge.magnociqueira.com.br/commerce/start?t=vector-oss&offer=vector-supporter) |
 
 ## Vector
 
@@ -100,6 +100,36 @@ Backends de processamento suportados:
 Perda de chave: o mesmo link de solicitação, aberto com a mesma conta GitHub,
 recupera a licença já emitida.
 
+## Apoie o Projeto
+
+O Vector continua disponível gratuitamente com todos os recursos publicados
+atualmente. Se ele for útil no seu trabalho, você pode apoiar opcionalmente sua
+manutenção e evolução.
+
+O benefício Vector Supporter inclui:
+
+- suporte prioritário e privado por e-mail por 12 meses; e
+- comunicações operacionais sobre releases, compatibilidade, manutenção,
+  segurança e alterações materiais do serviço do Vector.
+
+A compra não adiciona recursos exclusivos ao plugin. Para entregar e associar
+o benefício Supporter, o Nexus poderá criar uma nova licença técnica ou
+associar e atualizar uma licença existente. Não é necessário obter a chave
+gratuita antes do checkout; usuários existentes devem usar a mesma conta
+GitHub e o mesmo e-mail verificado.
+
+[Comprar Vector Supporter](https://bridge.magnociqueira.com.br/commerce/start?t=vector-oss&offer=vector-supporter)
+
+Antes da compra, consulte os
+[Termos de Supporter](https://legal.magnociqueira.com.br/pt-BR/products/vector/terms/),
+a [Política de Reembolso](https://legal.magnociqueira.com.br/pt-BR/products/vector/refunds/),
+a [Política de Privacidade](https://legal.magnociqueira.com.br/pt-BR/products/vector/privacy/)
+e a [Política de Suporte](https://legal.magnociqueira.com.br/pt-BR/products/vector/support/).
+Cópias Markdown permanecem em [`legal/`](legal/pt-BR/README.md) para facilitar
+a consulta no repositório. Mensagens sobre produtos não relacionados não são
+incluídas automaticamente e exigem uma escolha separada de marketing se ela
+for oferecida no futuro.
+
 ## Licença
 
 Vector é *source-available* para revisão, documentação e transparência técnica.
@@ -110,6 +140,7 @@ Consulte:
 - [LICENSE.md](LICENSE.md)
 - [BINARY_LICENSE.md](BINARY_LICENSE.md)
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- [Documentos legais do produto](legal/pt-BR/README.md)
 
 ## Releases Binários
 

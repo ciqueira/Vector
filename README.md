@@ -16,9 +16,9 @@ the plugin.
 
 ## Included Plugins
 
-| Plugin | Version | Distribution | Get Key |
-| --- | --- | --- | --- |
-| Vector | Current | OpenKey | [Get Key](https://bridge.magnociqueira.com.br/github/claim?t=vector-oss&tmpl=363f9ad5-7dec-4e29-86e6-b5923dbfb2d4&sig=ea36f997f27e41cd) |
+| Plugin | Version | Distribution | Free Key | Support Project |
+| --- | --- | --- | --- | --- |
+| Vector | Current | OpenKey | [Get Key](https://bridge.magnociqueira.com.br/github/claim?t=vector-oss&tmpl=363f9ad5-7dec-4e29-86e6-b5923dbfb2d4&sig=ea36f997f27e41cd) | [Become a Supporter](https://bridge.magnociqueira.com.br/commerce/start?t=vector-oss&offer=vector-supporter) |
 
 ## Vector
 
@@ -94,6 +94,36 @@ Supported processing backends:
 Lost key: open the same claim link with the same GitHub account to recover the
 issued license.
 
+## Support the Project
+
+Vector remains available free of charge with all currently published plugin
+features. If it is useful in your work, you can optionally support its
+maintenance and continued development.
+
+The Vector Supporter benefit includes:
+
+- priority private email support for 12 months; and
+- operational email notices about Vector releases, compatibility, maintenance,
+  security, and material service changes.
+
+The purchase does not add exclusive plugin features. To deliver and associate
+the Supporter benefit, Nexus may create a new technical license or associate
+and update an existing license. You do not need to obtain the free key before
+checkout; existing users should use the same GitHub account and verified
+email.
+
+[Purchase Vector Supporter](https://bridge.magnociqueira.com.br/commerce/start?t=vector-oss&offer=vector-supporter)
+
+Before purchasing, read the
+[Supporter Terms](https://legal.magnociqueira.com.br/products/vector/terms/),
+[Refund Policy](https://legal.magnociqueira.com.br/products/vector/refunds/),
+[Privacy Policy](https://legal.magnociqueira.com.br/products/vector/privacy/),
+and [Support Policy](https://legal.magnociqueira.com.br/products/vector/support/).
+Markdown copies remain under [`legal/`](legal/README.md) for repository
+discoverability. Messages about unrelated products are not included
+automatically and require a separate marketing choice if one is offered in the
+future.
+
 ## License
 
 Vector is source-available for review, documentation, and technical
@@ -105,6 +135,7 @@ See:
 - [LICENSE.md](LICENSE.md)
 - [BINARY_LICENSE.md](BINARY_LICENSE.md)
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- [Product legal documents](legal/README.md)
 
 ## Binary Releases
 
