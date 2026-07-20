@@ -13,7 +13,7 @@ paralelos de saturação. A ferramenta trabalha de forma direta, com controles
 separados para saturação por croma, saturação por zona tonal e visualização das
 curvas.
 
-Vector é distribuído pelo [MCNexus](https://github.com/ciqueira/MCNexus). O
+Vector é distribuído pelo [MCNexus](https://mcnexus.app). O
 Nexus fornece distribuição, licenciamento, entrega de atualizações e suporte ao
 produto. O MCNexus é o aplicativo desktop usado para ativar, instalar,
 atualizar e gerenciar o plugin.
@@ -22,7 +22,7 @@ atualizar e gerenciar o plugin.
 
 | Plugin | Versão | Distribuição | Chave Gratuita | Apoiar o Projeto |
 | --- | --- | --- | --- | --- |
-| Vector | Atual | OpenKey | [Obter Chave](https://bridge.magnociqueira.com.br/github/claim?t=vector-oss&tmpl=363f9ad5-7dec-4e29-86e6-b5923dbfb2d4&sig=ea36f997f27e41cd) | [Torne-se um Apoiador](https://bridge.magnociqueira.com.br/commerce/start?t=vector-oss&offer=vector-supporter) |
+| Vector | Atual | OpenKey | [Obter Chave](https://bridge.mcnexus.app/github/claim?t=vector-oss&tmpl=363f9ad5-7dec-4e29-86e6-b5923dbfb2d4&sig=ea36f997f27e41cd) | [Torne-se um Apoiador](https://bridge.mcnexus.app/commerce/start?t=vector-oss&offer=vector-supporter) |
 
 ## Vector
 
@@ -118,7 +118,7 @@ associar e atualizar uma licença existente. Não é necessário obter a chave
 gratuita antes do checkout; usuários existentes devem usar a mesma conta
 GitHub e o mesmo e-mail verificado.
 
-[Comprar Vector Supporter](https://bridge.magnociqueira.com.br/commerce/start?t=vector-oss&offer=vector-supporter)
+[Comprar Vector Supporter](https://bridge.mcnexus.app/commerce/start?t=vector-oss&offer=vector-supporter)
 
 Antes da compra, consulte os
 [Termos de Supporter](https://legal.magnociqueira.com.br/pt-BR/products/vector/terms/),

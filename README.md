@@ -9,7 +9,7 @@ Processing combines a serial split-tone stage with two parallel saturation
 branches. The tool stays direct, with separate controls for chroma saturation,
 tonal-zone saturation, and curve previews.
 
-Vector is distributed through [MCNexus](https://github.com/ciqueira/MCNexus).
+Vector is distributed through [MCNexus](https://mcnexus.app).
 Nexus provides distribution, licensing, update delivery, and product support.
 MCNexus is the desktop application used to activate, install, update, and manage
 the plugin.
@@ -18,7 +18,7 @@ the plugin.
 
 | Plugin | Version | Distribution | Free Key | Support Project |
 | --- | --- | --- | --- | --- |
-| Vector | Current | OpenKey | [Get Key](https://bridge.magnociqueira.com.br/github/claim?t=vector-oss&tmpl=363f9ad5-7dec-4e29-86e6-b5923dbfb2d4&sig=ea36f997f27e41cd) | [Become a Supporter](https://bridge.magnociqueira.com.br/commerce/start?t=vector-oss&offer=vector-supporter) |
+| Vector | Current | OpenKey | [Get Key](https://bridge.mcnexus.app/github/claim?t=vector-oss&tmpl=363f9ad5-7dec-4e29-86e6-b5923dbfb2d4&sig=ea36f997f27e41cd) | [Become a Supporter](https://bridge.mcnexus.app/commerce/start?t=vector-oss&offer=vector-supporter) |
 
 ## Vector
 
@@ -112,7 +112,7 @@ and update an existing license. You do not need to obtain the free key before
 checkout; existing users should use the same GitHub account and verified
 email.
 
-[Purchase Vector Supporter](https://bridge.magnociqueira.com.br/commerce/start?t=vector-oss&offer=vector-supporter)
+[Purchase Vector Supporter](https://bridge.mcnexus.app/commerce/start?t=vector-oss&offer=vector-supporter)
 
 Before purchasing, read the
 [Supporter Terms](https://legal.magnociqueira.com.br/products/vector/terms/),
