@@ -170,11 +170,15 @@ static void openMCNexusApp() {
 
 #ifdef __APPLE__
 extern "C" void RunMetalKernel(void *commandQueue, int width, int height,
-                               int rowBytes, const float *input,
-                               float *output, MCVectorParams params);
+                               int srcRowBytes, int dstRowBytes,
+                               int inputPremultiplied, int outputPremultiplied,
+                               const float *input, float *output,
+                               MCVectorParams params);
 #else
 extern "C" void RunCudaKernel(void *stream, int width, int height,
-                              int rowBytes, const float *input, float *output,
+                              int srcRowBytes, int dstRowBytes,
+                              int inputPremultiplied, int outputPremultiplied,
+                              const float *input, float *output,
                               MCVectorParams params);
 #endif
 
@@ -193,12 +197,18 @@ public:
     const OfxRectI &bounds = _srcImg->getBounds();
     const int width = bounds.x2 - bounds.x1;
     const int height = bounds.y2 - bounds.y1;
-    const int rowBytes = _srcImg->getRowBytes();
+    const int srcRowBytes = _srcImg->getRowBytes();
+    const int dstRowBytes = _dstImg->getRowBytes();
     const float *input = static_cast<const float *>(_srcImg->getPixelData());
     float *output = static_cast<float *>(_dstImg->getPixelData());
+    const bool inputPremultiplied =
+        _srcImg->getPreMultiplication() == OFX::eImagePreMultiplied;
+    const bool outputPremultiplied =
+        _dstImg->getPreMultiplication() == OFX::eImagePreMultiplied;
 
-    RunCudaKernel(_pCudaStream, width, height, rowBytes, input, output,
-                  _params);
+    RunCudaKernel(_pCudaStream, width, height, srcRowBytes, dstRowBytes,
+                  inputPremultiplied ? 1 : 0,
+                  outputPremultiplied ? 1 : 0, input, output, _params);
 #endif
   }
 
@@ -207,12 +217,18 @@ public:
     const OfxRectI &bounds = _srcImg->getBounds();
     const int width = bounds.x2 - bounds.x1;
     const int height = bounds.y2 - bounds.y1;
-    const int rowBytes = _srcImg->getRowBytes();
+    const int srcRowBytes = _srcImg->getRowBytes();
+    const int dstRowBytes = _dstImg->getRowBytes();
     const float *input = static_cast<const float *>(_srcImg->getPixelData());
     float *output = static_cast<float *>(_dstImg->getPixelData());
+    const bool inputPremultiplied =
+        _srcImg->getPreMultiplication() == OFX::eImagePreMultiplied;
+    const bool outputPremultiplied =
+        _dstImg->getPreMultiplication() == OFX::eImagePreMultiplied;
 
-    RunMetalKernel(_pMetalCmdQ, width, height, rowBytes, input, output,
-                   _params);
+    RunMetalKernel(_pMetalCmdQ, width, height, srcRowBytes, dstRowBytes,
+                   inputPremultiplied ? 1 : 0,
+                   outputPremultiplied ? 1 : 0, input, output, _params);
 #endif
   }
 
@@ -222,6 +238,10 @@ public:
     const OfxRectI &bounds = _srcImg->getBounds();
     const int width = bounds.x2 - bounds.x1;
     const int height = bounds.y2 - bounds.y1;
+    const bool inputPremultiplied =
+        _srcImg->getPreMultiplication() == OFX::eImagePreMultiplied;
+    const bool outputPremultiplied =
+        _dstImg->getPreMultiplication() == OFX::eImagePreMultiplied;
 
     for (int y = procWindow.y1; y < procWindow.y2; ++y) {
       if (_effect.abort()) {
@@ -240,9 +260,19 @@ public:
       for (int x = 0; x < rowWidth; ++x) {
         const int imageX = procWindow.x1 + x - bounds.x1;
         const int imageY = y - bounds.y1;
-        const float3 in =
+        const float alpha = srcRow[x * 4 + 3];
+        float3 in =
             make_float3(srcRow[x * 4 + 0], srcRow[x * 4 + 1],
                         srcRow[x * 4 + 2]);
+        if (inputPremultiplied) {
+          if (alpha > kEpsilon) {
+            in.x /= alpha;
+            in.y /= alpha;
+            in.z /= alpha;
+          } else {
+            in = make_float3(0.0f, 0.0f, 0.0f);
+          }
+        }
 
         float3 out = applyVector(in, _params);
         float overlayAlpha = 0.0f;
@@ -253,10 +283,17 @@ public:
         out = drawZoneCurve(out, imageX, imageY, width, height, _params,
                             overlayAlpha);
 
+        const float outputAlpha = std::max(alpha, overlayAlpha);
+        if (outputPremultiplied) {
+          out.x *= outputAlpha;
+          out.y *= outputAlpha;
+          out.z *= outputAlpha;
+        }
+
         dstRow[x * 4 + 0] = out.x;
         dstRow[x * 4 + 1] = out.y;
         dstRow[x * 4 + 2] = out.z;
-        dstRow[x * 4 + 3] = std::max(srcRow[x * 4 + 3], overlayAlpha);
+        dstRow[x * 4 + 3] = outputAlpha;
       }
     }
   }
@@ -361,7 +398,7 @@ MCVectorParams MCVectorPlugin::getActiveParams(double time) {
   int pivotPreset = 1;
   m_PivotPreset->getValueAtTime(time, pivotPreset);
   p.pivotPreset = pivotPreset;
-  int saturationModelSpace = 0;
+  int saturationModelSpace = 1;
   m_SaturationModelSpace->getValueAtTime(time, saturationModelSpace);
   p.saturationModelSpace = saturationModelSpace;
   p.enableSaturation = m_EnableSaturation->getValueAtTime(time) ? 1 : 0;
@@ -427,12 +464,9 @@ bool MCVectorPlugin::isIdentity(const OFX::IsIdentityArguments &args,
                                 double &identityTime) {
   const MCVectorParams p = getActiveParams(args.time);
   const bool satIdentity =
-      !p.enableSaturation ||
-      (p.satLow == 1.0f && p.satMid == 1.0f && p.satHigh == 1.0f &&
-       p.satGlobal == 1.0f);
+      !p.enableSaturation || mcvector::curvesSaturationIsIdentity(p);
   const bool zoneSatIdentity =
-      !p.enableZoneSaturation ||
-      p.zoneHighlightSaturation == 0.0f;
+      !p.enableZoneSaturation || mcvector::zoneSaturationIsIdentity(p);
   const bool splitIdentity =
       !p.enableSplitTone ||
       (p.splitShadow == 0.0f && p.splitHighlight == 0.0f);
@@ -548,7 +582,7 @@ void MCVectorFactory::describeInContext(OFX::ImageEffectDescriptor &desc,
   saturationModelSpace->appendOption("RGB Direct");
   saturationModelSpace->appendOption("RGB Spherical");
   saturationModelSpace->appendOption("OKLCH");
-  saturationModelSpace->setDefault(0);
+  saturationModelSpace->setDefault(1);
   page->addChild(*saturationModelSpace);
 
   {

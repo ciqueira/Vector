@@ -84,35 +84,9 @@ __device__ inline float3 applyRgbDirectSat(float3 rgb, float satMult) {
             neutral + (rgb.z - neutral) * satMult);
 }
 
-__device__ inline float wrapUnit(float value) {
-  value = fmodf(value, 1.0f);
-  return value < 0.0f ? value + 1.0f : value;
-}
-
-__device__ inline float circularDelta(float from, float to) {
-  return fmodf(to - from + 1.5f, 1.0f) - 0.5f;
-}
-
 __device__ inline float smoothstep01(float edge0, float edge1, float value) {
   const float t = clampf((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
   return t * t * (3.0f - 2.0f * t);
-}
-
-__device__ inline float rgbOpponentHue(float3 rgb, float fallbackHue) {
-  const float u = (2.0f * rgb.x - rgb.y - rgb.z) / sqrtf(6.0f);
-  const float v = (rgb.y - rgb.z) / sqrtf(2.0f);
-  if (sqrtf(u * u + v * v) < 1.0e-7f)
-    return fallbackHue;
-  return wrapUnit(atan2f(v, u) / (2.0f * MCVECTOR_PI));
-}
-
-__device__ inline float stableBlueMask(float3 rgb, int inputCs) {
-  if (inputCs == 0)
-    return 0.0f;
-
-  const float opponentHue = rgbOpponentHue(rgb, 2.0f / 3.0f);
-  const float distance = fabsf(circularDelta(2.0f / 3.0f, opponentHue));
-  return 1.0f - smoothstep01(25.0f / 360.0f, 75.0f / 360.0f, distance);
 }
 
 __device__ inline float3 rgbToXyz(float3 rgb, int inputCs) {
@@ -177,6 +151,61 @@ __device__ inline float3 xyzToRgb(float3 xyz, int outputCs) {
   return xyz;
 }
 
+__device__ inline float encodeDavinciIntermediate(float x);
+__device__ inline float encodeAcescct(float x);
+__device__ inline float encodeLogC3(float x);
+__device__ inline float encodeLogC4(float x);
+
+__device__ inline float decodeInputTransfer(float value, int inputCs) {
+  if (inputCs == 0)
+    return value <= 0.155251141552511f
+               ? (value - 0.0729055341958355f) / 10.5402377416545f
+               : exp2f(value * 17.52f - 9.72f);
+  if (inputCs == 1)
+    return value <= 0.02740668f
+               ? value / 10.44426855f
+               : exp2f(value / 0.07329248f - 7.0f) - 0.0075f;
+  if (inputCs == 2)
+    return value > 0.149658f
+               ? (powf(10.0f, (value - 0.385537f) / 0.247190f) -
+                  0.052272f) /
+                     5.555556f
+               : (value - 0.092809f) / 5.367655f;
+  if (inputCs == 3)
+    return value < 0.0f
+               ? value * 0.113597208611f - 0.018056996120f
+               : (exp2f(14.0f * (value - 0.092864125122f) /
+                              0.907135874878f +
+                         6.0f) -
+                  64.0f) /
+                     2231.82630907f;
+  return value;
+}
+
+__device__ inline float encodeInputTransfer(float value, int inputCs) {
+  if (inputCs == 0)
+    return encodeAcescct(value);
+  if (inputCs == 1)
+    return encodeDavinciIntermediate(value);
+  if (inputCs == 2)
+    return encodeLogC3(value);
+  if (inputCs == 3)
+    return encodeLogC4(value);
+  return value;
+}
+
+__device__ inline float3 decodeInputTransfer(float3 rgb, int inputCs) {
+  return f3(decodeInputTransfer(rgb.x, inputCs),
+            decodeInputTransfer(rgb.y, inputCs),
+            decodeInputTransfer(rgb.z, inputCs));
+}
+
+__device__ inline float3 encodeInputTransfer(float3 rgb, int inputCs) {
+  return f3(encodeInputTransfer(rgb.x, inputCs),
+            encodeInputTransfer(rgb.y, inputCs),
+            encodeInputTransfer(rgb.z, inputCs));
+}
+
 __device__ inline float3 adaptXyzD60ToD65(float3 xyz) {
   return f3(xyz.x * 0.987224008703f + xyz.y * -0.006113228607f +
                 xyz.z * 0.015953288336f,
@@ -231,15 +260,10 @@ __device__ inline float3 oklabToXyz(float3 oklab) {
                 lms.z * 1.5861632239f);
 }
 
-__device__ inline float3 neutralizeSmallOklabChroma(float3 oklab) {
-  const float chroma = sqrtf(oklab.y * oklab.y + oklab.z * oklab.z);
-  const float threshold =
-      MCVECTOR_OKLAB_NEUTRAL_EPSILON * fmaxf(1.0f, fabsf(oklab.x));
-  if (chroma <= threshold) {
-    oklab.y = 0.0f;
-    oklab.z = 0.0f;
-  }
-  return oklab;
+__device__ inline float oklchNeutralWeight(float3 oklch) {
+  const float scale = fmaxf(1.0f, fabsf(oklch.z));
+  const float inner = MCVECTOR_OKLAB_NEUTRAL_EPSILON * scale;
+  return smoothstep01(inner, inner * 3.0f, oklch.y);
 }
 
 __device__ inline float3 oklabToOklch(float3 lab) {
@@ -298,17 +322,18 @@ __device__ inline float3 chenToRgb(float3 chen) {
 }
 
 __device__ inline float3 rgbToOklchModel(float3 rgb, int inputCs) {
-  float3 xyz = rgbToXyz(rgb, inputCs);
+  const float3 linearRgb = decodeInputTransfer(rgb, inputCs);
+  float3 xyz = rgbToXyz(linearRgb, inputCs);
   if (inputCs == 0)
     xyz = adaptXyzD60ToD65(xyz);
-  return oklabToOklch(neutralizeSmallOklabChroma(xyzToOklab(xyz)));
+  return oklabToOklch(xyzToOklab(xyz));
 }
 
 __device__ inline float3 oklchModelToRgb(float3 oklch, int inputCs) {
   float3 xyz = oklabToXyz(oklchToOklab(oklch));
   if (inputCs == 0)
     xyz = adaptXyzD65ToD60(xyz);
-  return xyzToRgb(xyz, inputCs);
+  return encodeInputTransfer(xyzToRgb(xyz, inputCs), inputCs);
 }
 
 __device__ inline float3 convertSaturationModel(float3 color, int model,
@@ -346,10 +371,18 @@ __device__ inline float curveSatMultiplier(float satVal, MCVectorParams p) {
 __device__ inline float3 applyModelSat(float3 rgb, float satMult, int model,
                                        int inputCs) {
   model = normalizedSaturationModel(model);
+  if (fabsf(satMult - 1.0f) <= 1.0e-6f)
+    return rgb;
   if (model == 0)
     return applyRgbDirectSat(rgb, satMult);
 
   float3 modelColor = convertSaturationModel(rgb, model, true, inputCs);
+  if (model == 2) {
+    const float neutralWeight = oklchNeutralWeight(modelColor);
+    if (neutralWeight <= 0.0f)
+      return rgb;
+    satMult = 1.0f + (satMult - 1.0f) * neutralWeight;
+  }
   modelColor.y = fmaxf(0.0f, modelColor.y * satMult);
   return convertSaturationModel(modelColor, model, false, inputCs);
 }
@@ -360,20 +393,7 @@ __device__ inline float3 applyCurvesSaturation(float3 in,
   const int inputCs = p.pivotPreset;
   const float satMult =
       curveSatMultiplier(modelSatValue(in, model, inputCs), p);
-  float3 out = applyModelSat(in, satMult, model, inputCs);
-
-  if (model == 2) {
-    const float blueMask = stableBlueMask(in, inputCs);
-    if (blueMask > 0.0f) {
-      const float sphericalMult =
-          curveSatMultiplier(modelSatValue(in, 1, inputCs), p);
-      const float3 sphericalOut = applyModelSat(in, sphericalMult, 1, inputCs);
-      out = f3(out.x + (sphericalOut.x - out.x) * blueMask,
-               out.y + (sphericalOut.y - out.y) * blueMask,
-               out.z + (sphericalOut.z - out.z) * blueMask);
-    }
-  }
-  return out;
+  return applyModelSat(in, satMult, model, inputCs);
 }
 
 __device__ inline float zoneToneValue(float3 rgb) {
@@ -410,18 +430,7 @@ __device__ inline float3 applyZoneSaturation(float3 in, MCVectorParams p) {
   const int model = normalizedSaturationModel(p.saturationModelSpace);
   const int inputCs = p.pivotPreset;
   const float satMult = zoneSatMultiplier(x, p);
-  float3 out = applyModelSat(in, satMult, model, inputCs);
-
-  if (model == 2) {
-    const float blueMask = stableBlueMask(in, inputCs);
-    if (blueMask > 0.0f) {
-      const float3 sphericalOut = applyModelSat(in, satMult, 1, inputCs);
-      out = f3(out.x + (sphericalOut.x - out.x) * blueMask,
-               out.y + (sphericalOut.y - out.y) * blueMask,
-               out.z + (sphericalOut.z - out.z) * blueMask);
-    }
-  }
-  return out;
+  return applyModelSat(in, satMult, model, inputCs);
 }
 
 __device__ inline float splitCurveOffset(float curveBias) {
@@ -627,11 +636,28 @@ __device__ inline float3 applySplitTone(float3 in, MCVectorParams p) {
                              highlightMix, neutralWhite, p.highlightCurveBias);
 }
 
+__device__ inline bool curvesSaturationIsIdentity(MCVectorParams p) {
+  return p.satLumMask <= 1.0e-6f ||
+         (fabsf(p.satLow - 1.0f) <= 1.0e-6f &&
+          fabsf(p.satMid - 1.0f) <= 1.0e-6f &&
+          fabsf(p.satHigh - 1.0f) <= 1.0e-6f &&
+          fabsf(p.satGlobal - 1.0f) <= 1.0e-6f);
+}
+
+__device__ inline bool zoneSaturationIsIdentity(MCVectorParams p) {
+  return fabsf(p.zoneHighlightSaturation) <= 1.0e-6f;
+}
+
 __device__ inline float3 applyVector(float3 in, MCVectorParams p) {
   const float3 base = p.enableSplitTone ? applySplitTone(in, p) : in;
-  const float3 sat = p.enableSaturation ? applyCurvesSaturation(base, p) : base;
+  const float3 sat =
+      p.enableSaturation && !curvesSaturationIsIdentity(p)
+          ? applyCurvesSaturation(base, p)
+          : base;
   const float3 zone =
-      p.enableZoneSaturation ? applyZoneSaturation(base, p) : base;
+      p.enableZoneSaturation && !zoneSaturationIsIdentity(p)
+          ? applyZoneSaturation(base, p)
+          : base;
   return add3(base, add3(sub3(sat, base), sub3(zone, base)));
 }
 
@@ -1000,36 +1026,61 @@ __device__ inline float3 drawToneCurve(float3 out, int x, int y, int width,
                           highlightColor, overlayAlpha);
 }
 
-__global__ void MCVectorKernel(int width, int height, int rowBytes,
-                               const float *input, float *output,
+__global__ void MCVectorKernel(int width, int height, int srcRowBytes,
+                               int dstRowBytes, int inputPremultiplied,
+                               int outputPremultiplied, const float *input,
+                               float *output,
                                MCVectorParams params) {
   const int x = blockIdx.x * blockDim.x + threadIdx.x;
   const int y = blockIdx.y * blockDim.y + threadIdx.y;
   if (x >= width || y >= height)
     return;
 
-  const int fpr = rowBytes / (int)sizeof(float);
-  const int idx = y * fpr + x * 4;
-  const float3 in = f3(input[idx + 0], input[idx + 1], input[idx + 2]);
+  const int srcFpr = srcRowBytes / (int)sizeof(float);
+  const int dstFpr = dstRowBytes / (int)sizeof(float);
+  const int srcIdx = y * srcFpr + x * 4;
+  const int dstIdx = y * dstFpr + x * 4;
+  const float alpha = input[srcIdx + 3];
+  float3 in = f3(input[srcIdx + 0], input[srcIdx + 1], input[srcIdx + 2]);
+  if (inputPremultiplied != 0) {
+    if (alpha > MCVECTOR_EPSILON) {
+      in.x /= alpha;
+      in.y /= alpha;
+      in.z /= alpha;
+    } else {
+      in = f3(0.0f, 0.0f, 0.0f);
+    }
+  }
+
   float3 out = applyVector(in, params);
   float overlayAlpha = 0.0f;
   out = drawToneCurve(out, x, y, width, height, params, &overlayAlpha);
   out = drawSatCurve(out, x, y, width, height, params, &overlayAlpha);
   out = drawZoneCurve(out, x, y, width, height, params, &overlayAlpha);
 
-  output[idx + 0] = out.x;
-  output[idx + 1] = out.y;
-  output[idx + 2] = out.z;
-  output[idx + 3] = fmaxf(input[idx + 3], overlayAlpha);
+  const float outputAlpha = fmaxf(alpha, overlayAlpha);
+  if (outputPremultiplied != 0) {
+    out.x *= outputAlpha;
+    out.y *= outputAlpha;
+    out.z *= outputAlpha;
+  }
+
+  output[dstIdx + 0] = out.x;
+  output[dstIdx + 1] = out.y;
+  output[dstIdx + 2] = out.z;
+  output[dstIdx + 3] = outputAlpha;
 }
 
 extern "C" void RunCudaKernel(void *stream, int width, int height,
-                              int rowBytes, const float *input, float *output,
+                              int srcRowBytes, int dstRowBytes,
+                              int inputPremultiplied, int outputPremultiplied,
+                              const float *input, float *output,
                               MCVectorParams params) {
   cudaStream_t cudaStream = (cudaStream_t)stream;
   dim3 block(16, 16);
   dim3 grid((width + block.x - 1) / block.x,
             (height + block.y - 1) / block.y);
-  MCVectorKernel<<<grid, block, 0, cudaStream>>>(width, height, rowBytes, input,
-                                                 output, params);
+  MCVectorKernel<<<grid, block, 0, cudaStream>>>(
+      width, height, srcRowBytes, dstRowBytes, inputPremultiplied,
+      outputPremultiplied, input, output, params);
 }

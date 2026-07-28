@@ -42,7 +42,11 @@ sinal:
 
 - `RGB Direct`: mede a abertura entre canais RGB.
 - `RGB Spherical`: usa uma leitura esférica ao redor do eixo neutro.
-- `OKLCH`: usa uma leitura perceptual baseada em Oklab.
+- `OKLCH`: usa uma leitura perceptual baseada em Oklab e modifica diretamente
+  o croma em todo o círculo de matizes, incluindo ciano, azul e magenta.
+
+Os três modelos são independentes. O resultado OKLCH não é misturado com RGB
+Spherical na região dos azuis.
 
 ## Modelo de Processamento
 

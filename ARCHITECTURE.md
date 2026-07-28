@@ -7,7 +7,7 @@ Input RGBA
   -> OFX wrapper
   -> parameter snapshot
   -> CPU fallback, Metal, or CUDA backend
-  -> hybrid RGB processing
+  -> split-tone plus parallel saturation processing
        split-tone serial base
        curves saturation branch from split RGB
        zone saturation branch from split RGB
@@ -16,9 +16,12 @@ Input RGBA
   -> Output RGBA
 ```
 
-Vector intentionally keeps processing in the incoming RGB signal. The
-`Input Space` parameter is a pivot preset for split tone, not a color
-conversion selector.
+RGB Direct, RGB Spherical, and Split Tone work in the incoming RGB signal.
+When OKLCH saturation is selected, `Input Space` also selects the transfer
+decode/encode and linear RGB gamut used by the Oklab conversion. It continues
+to provide the split-tone pivot preset. Both saturation branches modify Oklab
+chroma directly for every hue, including cyan, blue, and magenta; they do not
+blend the result with RGB Spherical.
 
 ## Main Files
 
@@ -29,10 +32,11 @@ conversion selector.
 | `src/MetalKernel.mm` | macOS Metal pixel-processing implementation |
 | `src/CudaKernel.cu` | Windows/Linux CUDA pixel-processing implementation |
 | `src/VectorParams.h` | Shared parameter layout |
+| `../tests/` | Shared host-side OKLCH numerical and regression tests |
 
 ## Processing Model
 
-Vector uses a hybrid serial/parallel model:
+Vector uses a serial/parallel processing model:
 
 ```text
 base RGB -> Split Tone -> split RGB
@@ -46,10 +50,18 @@ Zone Saturation then run in parallel from that same split RGB base, so the two
 saturation branches remain independent from each other while responding to the
 color separation created by split tone.
 
+Identity saturation branches are bypassed before color-model conversion.
+Near-neutral OKLCH corrections use a continuous chroma weight instead of
+snapping Oklab `a` and `b` to zero. OKLCH remains a pure model across the full
+hue circle; RGB Direct and RGB Spherical are independent user-selectable
+models rather than fallback paths.
+
 ## GPU Parity
 
 Metal and CUDA implement the same math and parameter layout as the host-side
-fallback. macOS uses Metal; Windows and Linux use CUDA.
+fallback. macOS uses Metal; Windows and Linux use CUDA. All three paths
+unpremultiply associated-alpha input before processing and premultiply the
+result when required by the output clip.
 
 The manual `Validate MCVector CUDA` workflow compiles the Windows/CUDA bundle
 without uploading or publishing an artifact.

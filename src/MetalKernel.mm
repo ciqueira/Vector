@@ -95,33 +95,9 @@ constant float kOverlayPatchAtReference = 360.0f;
 
 float3 adaptXyzD65ToD60(float3 xyz);
 
-float wrapUnit(float value) {
-  value = fmod(value, 1.0f);
-  return value < 0.0f ? value + 1.0f : value;
-}
-
-float circularDelta(float from, float to) {
-  return fmod(to - from + 1.5f, 1.0f) - 0.5f;
-}
-
 float smoothstep01(float edge0, float edge1, float value) {
   float t = clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
   return t * t * (3.0f - 2.0f * t);
-}
-
-float rgbOpponentHue(float3 rgb, float fallbackHue) {
-  float u = (2.0f * rgb.x - rgb.y - rgb.z) / sqrt(6.0f);
-  float v = (rgb.y - rgb.z) / sqrt(2.0f);
-  if (length(float2(u, v)) < 1.0e-7f) return fallbackHue;
-  return wrapUnit(atan2(v, u) / (2.0f * kPi));
-}
-
-float stableBlueMask(float3 rgb, int inputCs) {
-  if (inputCs == 0) return 0.0f;
-
-  float opponentHue = rgbOpponentHue(rgb, 2.0f / 3.0f);
-  float distance = abs(circularDelta(2.0f / 3.0f, opponentHue));
-  return 1.0f - smoothstep01(25.0f / 360.0f, 75.0f / 360.0f, distance);
 }
 
 float3 rgbToXyz(float3 rgb, int inputCs) {
@@ -194,6 +170,61 @@ float3 xyzToRgb(float3 xyz, int outputCs) {
   return xyz;
 }
 
+float encodeDavinciIntermediate(float x);
+float encodeAcescct(float x);
+float encodeLogC3(float x);
+float encodeLogC4(float x);
+
+float decodeInputTransfer(float value, int inputCs) {
+  if (inputCs == 0) {
+    return value <= 0.155251141552511f
+               ? (value - 0.0729055341958355f) / 10.5402377416545f
+               : exp2(value * 17.52f - 9.72f);
+  }
+  if (inputCs == 1) {
+    return value <= 0.02740668f
+               ? value / 10.44426855f
+               : exp2(value / 0.07329248f - 7.0f) - 0.0075f;
+  }
+  if (inputCs == 2) {
+    return value > 0.149658f
+               ? (pow(10.0f, (value - 0.385537f) / 0.247190f) -
+                  0.052272f) /
+                     5.555556f
+               : (value - 0.092809f) / 5.367655f;
+  }
+  if (inputCs == 3) {
+    return value < 0.0f
+               ? value * 0.113597208611f - 0.018056996120f
+               : (exp2(14.0f * (value - 0.092864125122f) /
+                             0.907135874878f +
+                        6.0f) -
+                  64.0f) /
+                     2231.82630907f;
+  }
+  return value;
+}
+
+float encodeInputTransfer(float value, int inputCs) {
+  if (inputCs == 0) return encodeAcescct(value);
+  if (inputCs == 1) return encodeDavinciIntermediate(value);
+  if (inputCs == 2) return encodeLogC3(value);
+  if (inputCs == 3) return encodeLogC4(value);
+  return value;
+}
+
+float3 decodeInputTransfer(float3 rgb, int inputCs) {
+  return float3(decodeInputTransfer(rgb.x, inputCs),
+                decodeInputTransfer(rgb.y, inputCs),
+                decodeInputTransfer(rgb.z, inputCs));
+}
+
+float3 encodeInputTransfer(float3 rgb, int inputCs) {
+  return float3(encodeInputTransfer(rgb.x, inputCs),
+                encodeInputTransfer(rgb.y, inputCs),
+                encodeInputTransfer(rgb.z, inputCs));
+}
+
 float3 adaptXyzD60ToD65(float3 xyz) {
   return float3(xyz.x * 0.987224008703f + xyz.y * -0.006113228607f +
                     xyz.z * 0.015953288336f,
@@ -242,14 +273,10 @@ float3 oklabToXyz(float3 oklab) {
                     lms.z * 1.5861632239f);
 }
 
-float3 neutralizeSmallOklabChroma(float3 oklab) {
-  float chroma = length(oklab.yz);
-  float threshold = kOklabNeutralEpsilon * max(1.0f, abs(oklab.x));
-  if (chroma <= threshold) {
-    oklab.y = 0.0f;
-    oklab.z = 0.0f;
-  }
-  return oklab;
+float oklchNeutralWeight(float3 oklch) {
+  float scale = max(1.0f, abs(oklch.z));
+  float inner = kOklabNeutralEpsilon * scale;
+  return smoothstep01(inner, inner * 3.0f, oklch.y);
 }
 
 float3 oklabToOklch(float3 lab) {
@@ -304,15 +331,16 @@ float3 chenToRgb(float3 chen) {
 }
 
 float3 rgbToOklchModel(float3 rgb, int inputCs) {
-  float3 xyz = rgbToXyz(rgb, inputCs);
+  float3 linearRgb = decodeInputTransfer(rgb, inputCs);
+  float3 xyz = rgbToXyz(linearRgb, inputCs);
   if (inputCs == 0) xyz = adaptXyzD60ToD65(xyz);
-  return oklabToOklch(neutralizeSmallOklabChroma(xyzToOklab(xyz)));
+  return oklabToOklch(xyzToOklab(xyz));
 }
 
 float3 oklchModelToRgb(float3 oklch, int inputCs) {
   float3 xyz = oklabToXyz(oklchToOklab(oklch));
   if (inputCs == 0) xyz = adaptXyzD65ToD60(xyz);
-  return xyzToRgb(xyz, inputCs);
+  return encodeInputTransfer(xyzToRgb(xyz, inputCs), inputCs);
 }
 
 float3 convertSaturationModel(float3 color, int model, bool toModel,
@@ -347,9 +375,15 @@ float curveSatMultiplier(float satVal, constant MCVectorParams &p) {
 
 float3 applyModelSat(float3 rgb, float satMult, int model, int inputCs) {
   model = normalizedSaturationModel(model);
+  if (abs(satMult - 1.0f) <= 1.0e-6f) return rgb;
   if (model == 0) return applyRgbDirectSat(rgb, satMult);
 
   float3 modelColor = convertSaturationModel(rgb, model, true, inputCs);
+  if (model == 2) {
+    float neutralWeight = oklchNeutralWeight(modelColor);
+    if (neutralWeight <= 0.0f) return rgb;
+    satMult = 1.0f + (satMult - 1.0f) * neutralWeight;
+  }
   modelColor.y = max(0.0f, modelColor.y * satMult);
   return convertSaturationModel(modelColor, model, false, inputCs);
 }
@@ -358,18 +392,7 @@ float3 applyCurvesSaturation(float3 in, constant MCVectorParams &p) {
   int model = normalizedSaturationModel(p.saturationModelSpace);
   int inputCs = p.pivotPreset;
   float satMult = curveSatMultiplier(modelSatValue(in, model, inputCs), p);
-  float3 out = applyModelSat(in, satMult, model, inputCs);
-
-  if (model == 2) {
-    float blueMask = stableBlueMask(in, inputCs);
-    if (blueMask > 0.0f) {
-      float sphericalMult = curveSatMultiplier(modelSatValue(in, 1, inputCs),
-                                               p);
-      float3 sphericalOut = applyModelSat(in, sphericalMult, 1, inputCs);
-      out = mix(out, sphericalOut, blueMask);
-    }
-  }
-  return out;
+  return applyModelSat(in, satMult, model, inputCs);
 }
 
 float zoneToneValue(float3 rgb) {
@@ -404,16 +427,7 @@ float3 applyZoneSaturation(float3 in, constant MCVectorParams &p) {
   int model = normalizedSaturationModel(p.saturationModelSpace);
   int inputCs = p.pivotPreset;
   float satMult = zoneSatMultiplier(x, p);
-  float3 out = applyModelSat(in, satMult, model, inputCs);
-
-  if (model == 2) {
-    float blueMask = stableBlueMask(in, inputCs);
-    if (blueMask > 0.0f) {
-      float3 sphericalOut = applyModelSat(in, satMult, 1, inputCs);
-      out = mix(out, sphericalOut, blueMask);
-    }
-  }
-  return out;
+  return applyModelSat(in, satMult, model, inputCs);
 }
 
 float splitCurveOffset(float curveBias) {
@@ -603,11 +617,28 @@ float3 applySplitTone(float3 in, constant MCVectorParams &p) {
                              p.highlightCurveBias);
 }
 
+bool curvesSaturationIsIdentity(constant MCVectorParams &p) {
+  return p.satLumMask <= 1.0e-6f ||
+         (abs(p.satLow - 1.0f) <= 1.0e-6f &&
+          abs(p.satMid - 1.0f) <= 1.0e-6f &&
+          abs(p.satHigh - 1.0f) <= 1.0e-6f &&
+          abs(p.satGlobal - 1.0f) <= 1.0e-6f);
+}
+
+bool zoneSaturationIsIdentity(constant MCVectorParams &p) {
+  return abs(p.zoneHighlightSaturation) <= 1.0e-6f;
+}
+
 float3 applyVector(float3 in, constant MCVectorParams &p) {
   float3 base = p.enableSplitTone != 0 ? applySplitTone(in, p) : in;
-  float3 sat = p.enableSaturation != 0 ? applyCurvesSaturation(base, p) : base;
+  float3 sat =
+      p.enableSaturation != 0 && !curvesSaturationIsIdentity(p)
+          ? applyCurvesSaturation(base, p)
+          : base;
   float3 zone =
-      p.enableZoneSaturation != 0 ? applyZoneSaturation(base, p) : base;
+      p.enableZoneSaturation != 0 && !zoneSaturationIsIdentity(p)
+          ? applyZoneSaturation(base, p)
+          : base;
   return base + (sat - base) + (zone - base);
 }
 
@@ -954,16 +985,31 @@ float3 drawToneCurve(float3 out, uint x, uint y, uint width, uint height,
 
 kernel void MCVectorKernel(constant int &width [[ buffer(0) ]],
                            constant int &height [[ buffer(1) ]],
-                           constant int &rowBytes [[ buffer(2) ]],
-                           constant MCVectorParams &params [[ buffer(3) ]],
-                           const device float *input [[ buffer(4) ]],
-                           device float *output [[ buffer(5) ]],
+                           constant int &srcRowBytes [[ buffer(2) ]],
+                           constant int &dstRowBytes [[ buffer(3) ]],
+                           constant int &inputPremultiplied [[ buffer(4) ]],
+                           constant int &outputPremultiplied [[ buffer(5) ]],
+                           constant MCVectorParams &params [[ buffer(6) ]],
+                           const device float *input [[ buffer(7) ]],
+                           device float *output [[ buffer(8) ]],
                            uint2 id [[ thread_position_in_grid ]]) {
   if (id.x >= (uint)width || id.y >= (uint)height) return;
-  int fpr = rowBytes / int(sizeof(float));
-  int idx = int(id.y) * fpr + int(id.x) * 4;
+  int srcFpr = srcRowBytes / int(sizeof(float));
+  int dstFpr = dstRowBytes / int(sizeof(float));
+  int srcIdx = int(id.y) * srcFpr + int(id.x) * 4;
+  int dstIdx = int(id.y) * dstFpr + int(id.x) * 4;
 
-  float3 in = float3(input[idx + 0], input[idx + 1], input[idx + 2]);
+  float alpha = input[srcIdx + 3];
+  float3 in =
+      float3(input[srcIdx + 0], input[srcIdx + 1], input[srcIdx + 2]);
+  if (inputPremultiplied != 0) {
+    if (alpha > kEpsilon) {
+      in /= alpha;
+    } else {
+      in = float3(0.0f);
+    }
+  }
+
   float3 out = applyVector(in, params);
   float overlayAlpha = 0.0f;
   out = drawToneCurve(out, id.x, id.y, uint(width), uint(height), params,
@@ -973,10 +1019,13 @@ kernel void MCVectorKernel(constant int &width [[ buffer(0) ]],
   out = drawZoneCurve(out, id.x, id.y, uint(width), uint(height), params,
                       &overlayAlpha);
 
-  output[idx + 0] = out.x;
-  output[idx + 1] = out.y;
-  output[idx + 2] = out.z;
-  output[idx + 3] = max(input[idx + 3], overlayAlpha);
+  float outputAlpha = max(alpha, overlayAlpha);
+  if (outputPremultiplied != 0) out *= outputAlpha;
+
+  output[dstIdx + 0] = out.x;
+  output[dstIdx + 1] = out.y;
+  output[dstIdx + 2] = out.z;
+  output[dstIdx + 3] = outputAlpha;
 }
 )METAL";
 
@@ -985,8 +1034,10 @@ static std::unordered_map<id<MTLCommandQueue>, id<MTLComputePipelineState>>
     s_PipelineMap;
 
 extern "C" void RunMetalKernel(void *commandQueue, int width, int height,
-                               int rowBytes, const float *input,
-                               float *output, MCVectorParams params) {
+                               int srcRowBytes, int dstRowBytes,
+                               int inputPremultiplied, int outputPremultiplied,
+                               const float *input, float *output,
+                               MCVectorParams params) {
   @autoreleasepool {
     id<MTLCommandQueue> queue = static_cast<id<MTLCommandQueue>>(commandQueue);
     if (!queue) {
@@ -1048,10 +1099,13 @@ extern "C" void RunMetalKernel(void *commandQueue, int width, int height,
     [encoder setComputePipelineState:pipelineState];
     [encoder setBytes:&width length:sizeof(int) atIndex:0];
     [encoder setBytes:&height length:sizeof(int) atIndex:1];
-    [encoder setBytes:&rowBytes length:sizeof(int) atIndex:2];
-    [encoder setBytes:&params length:sizeof(MCVectorParams) atIndex:3];
-    [encoder setBuffer:srcBuf offset:0 atIndex:4];
-    [encoder setBuffer:dstBuf offset:0 atIndex:5];
+    [encoder setBytes:&srcRowBytes length:sizeof(int) atIndex:2];
+    [encoder setBytes:&dstRowBytes length:sizeof(int) atIndex:3];
+    [encoder setBytes:&inputPremultiplied length:sizeof(int) atIndex:4];
+    [encoder setBytes:&outputPremultiplied length:sizeof(int) atIndex:5];
+    [encoder setBytes:&params length:sizeof(MCVectorParams) atIndex:6];
+    [encoder setBuffer:srcBuf offset:0 atIndex:7];
+    [encoder setBuffer:dstBuf offset:0 atIndex:8];
 
     NSUInteger exeWidth = pipelineState.threadExecutionWidth;
     NSUInteger maxHeight = pipelineState.maxTotalThreadsPerThreadgroup / exeWidth;

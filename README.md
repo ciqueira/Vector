@@ -37,7 +37,11 @@ Available input presets:
 
 - `RGB Direct`: measures the spread between RGB channels.
 - `RGB Spherical`: uses a spherical reading around the neutral axis.
-- `OKLCH`: uses a perceptual reading based on Oklab.
+- `OKLCH`: uses a perceptual reading based on Oklab and modifies chroma
+  directly across the full hue circle, including cyan, blue, and magenta.
+
+The three models are independent. The OKLCH result is not blended with RGB
+Spherical in the blue region.
 
 ## Processing Model
 

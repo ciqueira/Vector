@@ -88,37 +88,9 @@ static constexpr float kOverlayLineHalfThickness =
 static constexpr float kOverlayLineFalloff = 1.0f / kOverlayReferenceHeight;
 static constexpr float kOverlayPatchAtReference = 360.0f;
 
-inline float wrapUnit(float value) {
-  value = std::fmod(value, 1.0f);
-  return value < 0.0f ? value + 1.0f : value;
-}
-
-inline float circularDelta(float from, float to) {
-  return std::fmod(to - from + 1.5f, 1.0f) - 0.5f;
-}
-
 inline float smoothstep01(float edge0, float edge1, float value) {
   const float t = clampf((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
   return t * t * (3.0f - 2.0f * t);
-}
-
-inline float rgbOpponentHue(float3 rgb, float fallbackHue) {
-  const float u = (2.0f * rgb.x - rgb.y - rgb.z) / std::sqrt(6.0f);
-  const float v = (rgb.y - rgb.z) / std::sqrt(2.0f);
-  if (std::sqrt(u * u + v * v) < 1.0e-7f) {
-    return fallbackHue;
-  }
-  return wrapUnit(std::atan2(v, u) / (2.0f * kPi));
-}
-
-inline float stableBlueMask(float3 rgb, int inputCs) {
-  if (inputCs == 0) {
-    return 0.0f;
-  }
-
-  const float opponentHue = rgbOpponentHue(rgb, 2.0f / 3.0f);
-  const float distance = std::fabs(circularDelta(2.0f / 3.0f, opponentHue));
-  return 1.0f - smoothstep01(25.0f / 360.0f, 75.0f / 360.0f, distance);
 }
 
 inline float3 rgbToXyz(float3 rgb, int inputCs) {
@@ -191,6 +163,69 @@ inline float3 xyzToRgb(float3 xyz, int outputCs) {
   return xyz;
 }
 
+inline float encodeDavinciIntermediate(float x);
+inline float encodeAcescct(float x);
+inline float encodeLogC3(float x);
+inline float encodeLogC4(float x);
+
+inline float decodeInputTransfer(float value, int inputCs) {
+  if (inputCs == 0) {
+    return value <= 0.155251141552511f
+               ? (value - 0.0729055341958355f) / 10.5402377416545f
+               : std::exp2(value * 17.52f - 9.72f);
+  }
+  if (inputCs == 1) {
+    return value <= 0.02740668f
+               ? value / 10.44426855f
+               : std::exp2(value / 0.07329248f - 7.0f) - 0.0075f;
+  }
+  if (inputCs == 2) {
+    return value > 0.149658f
+               ? (std::pow(10.0f, (value - 0.385537f) / 0.247190f) -
+                  0.052272f) /
+                     5.555556f
+               : (value - 0.092809f) / 5.367655f;
+  }
+  if (inputCs == 3) {
+    return value < 0.0f
+               ? value * 0.113597208611f - 0.018056996120f
+               : (std::exp2(14.0f * (value - 0.092864125122f) /
+                               0.907135874878f +
+                           6.0f) -
+                  64.0f) /
+                     2231.82630907f;
+  }
+  return value;
+}
+
+inline float encodeInputTransfer(float value, int inputCs) {
+  if (inputCs == 0) {
+    return encodeAcescct(value);
+  }
+  if (inputCs == 1) {
+    return encodeDavinciIntermediate(value);
+  }
+  if (inputCs == 2) {
+    return encodeLogC3(value);
+  }
+  if (inputCs == 3) {
+    return encodeLogC4(value);
+  }
+  return value;
+}
+
+inline float3 decodeInputTransfer(float3 rgb, int inputCs) {
+  return make_float3(decodeInputTransfer(rgb.x, inputCs),
+                     decodeInputTransfer(rgb.y, inputCs),
+                     decodeInputTransfer(rgb.z, inputCs));
+}
+
+inline float3 encodeInputTransfer(float3 rgb, int inputCs) {
+  return make_float3(encodeInputTransfer(rgb.x, inputCs),
+                     encodeInputTransfer(rgb.y, inputCs),
+                     encodeInputTransfer(rgb.z, inputCs));
+}
+
 inline float3 adaptXyzD60ToD65(float3 xyz) {
   return make_float3(xyz.x * 0.987224008703f + xyz.y * -0.006113228607f +
                          xyz.z * 0.015953288336f,
@@ -246,14 +281,10 @@ inline float3 oklabToXyz(float3 oklab) {
                          lms.z * 1.5861632239f);
 }
 
-inline float3 neutralizeSmallOklabChroma(float3 oklab) {
-  const float chroma = std::sqrt(oklab.y * oklab.y + oklab.z * oklab.z);
-  const float threshold = kOklabNeutralEpsilon * std::max(1.0f, std::fabs(oklab.x));
-  if (chroma <= threshold) {
-    oklab.y = 0.0f;
-    oklab.z = 0.0f;
-  }
-  return oklab;
+inline float oklchNeutralWeight(float3 oklch) {
+  const float scale = std::max(1.0f, std::fabs(oklch.z));
+  const float inner = kOklabNeutralEpsilon * scale;
+  return smoothstep01(inner, inner * 3.0f, oklch.y);
 }
 
 inline float3 oklabToOklch(float3 lab) {
@@ -317,11 +348,12 @@ inline float3 chenToRgb(float3 chen) {
 }
 
 inline float3 rgbToOklchModel(float3 rgb, int inputCs) {
-  float3 xyz = rgbToXyz(rgb, inputCs);
+  const float3 linearRgb = decodeInputTransfer(rgb, inputCs);
+  float3 xyz = rgbToXyz(linearRgb, inputCs);
   if (inputCs == 0) {
     xyz = adaptXyzD60ToD65(xyz);
   }
-  return oklabToOklch(neutralizeSmallOklabChroma(xyzToOklab(xyz)));
+  return oklabToOklch(xyzToOklab(xyz));
 }
 
 inline float3 oklchModelToRgb(float3 oklch, int inputCs) {
@@ -329,7 +361,7 @@ inline float3 oklchModelToRgb(float3 oklch, int inputCs) {
   if (inputCs == 0) {
     xyz = adaptXyzD65ToD60(xyz);
   }
-  return xyzToRgb(xyz, inputCs);
+  return encodeInputTransfer(xyzToRgb(xyz, inputCs), inputCs);
 }
 
 inline float3 convertSaturationModel(float3 color, int model, bool toModel,
@@ -369,11 +401,21 @@ inline float curveSatMultiplier(float satVal, const MCVectorParams &p) {
 inline float3 applyModelSat(float3 rgb, float satMult, int model,
                             int inputCs) {
   model = normalizedSaturationModel(model);
+  if (std::fabs(satMult - 1.0f) <= 1.0e-6f) {
+    return rgb;
+  }
   if (model == 0) {
     return applyRgbDirectSat(rgb, satMult);
   }
 
   float3 modelColor = convertSaturationModel(rgb, model, true, inputCs);
+  if (model == 2) {
+    const float neutralWeight = oklchNeutralWeight(modelColor);
+    if (neutralWeight <= 0.0f) {
+      return rgb;
+    }
+    satMult = 1.0f + (satMult - 1.0f) * neutralWeight;
+  }
   modelColor.y = std::max(0.0f, modelColor.y * satMult);
   return convertSaturationModel(modelColor, model, false, inputCs);
 }
@@ -382,20 +424,7 @@ inline float3 applyCurvesSaturation(float3 in, const MCVectorParams &p) {
   const int model = normalizedSaturationModel(p.saturationModelSpace);
   const int inputCs = p.pivotPreset;
   const float satMult = curveSatMultiplier(modelSatValue(in, model, inputCs), p);
-  float3 out = applyModelSat(in, satMult, model, inputCs);
-
-  if (model == 2) {
-    const float blueMask = stableBlueMask(in, inputCs);
-    if (blueMask > 0.0f) {
-      const float sphericalMult =
-          curveSatMultiplier(modelSatValue(in, 1, inputCs), p);
-      const float3 sphericalOut = applyModelSat(in, sphericalMult, 1, inputCs);
-      out.x = mixf(out.x, sphericalOut.x, blueMask);
-      out.y = mixf(out.y, sphericalOut.y, blueMask);
-      out.z = mixf(out.z, sphericalOut.z, blueMask);
-    }
-  }
-  return out;
+  return applyModelSat(in, satMult, model, inputCs);
 }
 
 inline float zoneToneValue(float3 rgb) {
@@ -431,18 +460,7 @@ inline float3 applyZoneSaturation(float3 in, const MCVectorParams &p) {
   const int model = normalizedSaturationModel(p.saturationModelSpace);
   const int inputCs = p.pivotPreset;
   const float satMult = zoneSatMultiplier(x, p);
-  float3 out = applyModelSat(in, satMult, model, inputCs);
-
-  if (model == 2) {
-    const float blueMask = stableBlueMask(in, inputCs);
-    if (blueMask > 0.0f) {
-      const float3 sphericalOut = applyModelSat(in, satMult, 1, inputCs);
-      out.x = mixf(out.x, sphericalOut.x, blueMask);
-      out.y = mixf(out.y, sphericalOut.y, blueMask);
-      out.z = mixf(out.z, sphericalOut.z, blueMask);
-    }
-  }
-  return out;
+  return applyModelSat(in, satMult, model, inputCs);
 }
 
 inline float splitCurveOffset(float curveBias) {
@@ -657,11 +675,28 @@ inline float3 applySplitTone(float3 in, const MCVectorParams &p) {
   return out;
 }
 
+inline bool curvesSaturationIsIdentity(const MCVectorParams &p) {
+  return p.satLumMask <= 1.0e-6f ||
+         (std::fabs(p.satLow - 1.0f) <= 1.0e-6f &&
+          std::fabs(p.satMid - 1.0f) <= 1.0e-6f &&
+          std::fabs(p.satHigh - 1.0f) <= 1.0e-6f &&
+          std::fabs(p.satGlobal - 1.0f) <= 1.0e-6f);
+}
+
+inline bool zoneSaturationIsIdentity(const MCVectorParams &p) {
+  return std::fabs(p.zoneHighlightSaturation) <= 1.0e-6f;
+}
+
 inline float3 applyVector(float3 in, const MCVectorParams &p) {
   const float3 base = p.enableSplitTone ? applySplitTone(in, p) : in;
-  const float3 sat = p.enableSaturation ? applyCurvesSaturation(base, p) : base;
+  const float3 sat =
+      p.enableSaturation && !curvesSaturationIsIdentity(p)
+          ? applyCurvesSaturation(base, p)
+          : base;
   const float3 zone =
-      p.enableZoneSaturation ? applyZoneSaturation(base, p) : base;
+      p.enableZoneSaturation && !zoneSaturationIsIdentity(p)
+          ? applyZoneSaturation(base, p)
+          : base;
   return make_float3(base.x + (sat.x - base.x) + (zone.x - base.x),
                      base.y + (sat.y - base.y) + (zone.y - base.y),
                      base.z + (sat.z - base.z) + (zone.z - base.z));
