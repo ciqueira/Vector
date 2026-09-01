@@ -4,7 +4,7 @@
 
 Last updated: July 17, 2026
 
-Document version: `vector-refunds-2026-07-17`
+Document version: `vector-refunds-2026-08-31`
 
 Seller: **56.442.448 MAGNO DIAS CIQUEIRA**, trade name **Magno Dias
 Ciqueira**, CNPJ **56.442.448/0001-10**. Service address: Avenida Augusto de

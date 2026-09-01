@@ -4,7 +4,7 @@
 
 Last updated: July 17, 2026
 
-Document version: `vector-privacy-2026-07-17`
+Document version: `vector-privacy-2026-08-31`
 
 This policy describes personal-data processing specifically connected to Vector, its free license, the optional Supporter purchase, operational
 email, and product support. The

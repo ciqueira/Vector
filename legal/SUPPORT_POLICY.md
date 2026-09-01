@@ -4,7 +4,7 @@
 
 Last updated: July 17, 2026
 
-Document version: `vector-support-2026-07-17`
+Document version: `vector-support-2026-08-31`
 
 ## 1. Free community support
 
