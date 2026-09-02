@@ -26,10 +26,9 @@
 #include "ofxsProcessing.h"
 
 #ifndef PLUGIN_VERSION
-#define kPluginVersion "v0.0.1"
-#else
-#define kPluginVersion PLUGIN_VERSION
+#error "PLUGIN_VERSION must be defined from the Vector VERSION file"
 #endif
+#define kPluginVersion PLUGIN_VERSION
 
 #define kPluginName "Vector"
 #define kPluginNameLabel "Vector " kPluginVersion
