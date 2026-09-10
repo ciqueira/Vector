@@ -22,7 +22,7 @@ atualizar e gerenciar o plugin.
 
 | Plugin | Versão | Distribuição | Chave Gratuita | Apoiar o Projeto |
 | --- | --- | --- | --- | --- |
-| Vector | Atual | OpenKey | [Obter Chave](https://bridge.mcnexus.app/github/claim?t=vector-oss&tmpl=363f9ad5-7dec-4e29-86e6-b5923dbfb2d4&sig=ea36f997f27e41cd) | [Torne-se um Apoiador](https://bridge.mcnexus.app/commerce/start?t=vector-oss&offer=vector-supporter) |
+| Vector | Atual | OpenKey | [Obter Chave](https://get.mcnexus.app/vector?utm_source=github&utm_medium=readme&utm_content=vector-pt) | [Torne-se um Apoiador](https://buy.mcnexus.app/vector?utm_source=github&utm_medium=readme&utm_content=vector-pt) |
 
 ## Vector
 
@@ -124,7 +124,7 @@ associar e atualizar uma licença existente. Não é necessário obter a chave
 gratuita antes do checkout; usuários existentes devem usar a mesma conta
 GitHub e o mesmo e-mail verificado.
 
-[Comprar Vector Supporter](https://bridge.mcnexus.app/commerce/start?t=vector-oss&offer=vector-supporter)
+[Comprar Vector Supporter](https://buy.mcnexus.app/vector?utm_source=github&utm_medium=readme&utm_content=vector-pt)
 
 Antes da compra, consulte os
 [Termos de Supporter](https://legal.magnociqueira.com.br/pt-BR/products/vector/terms/),

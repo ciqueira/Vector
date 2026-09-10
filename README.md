@@ -18,7 +18,7 @@ the plugin.
 
 | Plugin | Version | Distribution | Free Key | Support Project |
 | --- | --- | --- | --- | --- |
-| Vector | Current | OpenKey | [Get Key](https://bridge.mcnexus.app/github/claim?t=vector-oss&tmpl=363f9ad5-7dec-4e29-86e6-b5923dbfb2d4&sig=ea36f997f27e41cd) | [Become a Supporter](https://bridge.mcnexus.app/commerce/start?t=vector-oss&offer=vector-supporter) |
+| Vector | Current | OpenKey | [Get Key](https://get.mcnexus.app/vector?utm_source=github&utm_medium=readme&utm_content=vector-en) | [Become a Supporter](https://buy.mcnexus.app/vector?utm_source=github&utm_medium=readme&utm_content=vector-en) |
 
 ## Vector
 
@@ -118,7 +118,7 @@ and update an existing license. You do not need to obtain the free key before
 checkout; existing users should use the same GitHub account and verified
 email.
 
-[Purchase Vector Supporter](https://bridge.mcnexus.app/commerce/start?t=vector-oss&offer=vector-supporter)
+[Purchase Vector Supporter](https://buy.mcnexus.app/vector?utm_source=github&utm_medium=readme&utm_content=vector-en)
 
 Before purchasing, read the
 [Supporter Terms](https://legal.magnociqueira.com.br/products/vector/terms/),
