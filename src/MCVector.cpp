@@ -282,33 +282,6 @@ static bool tryOpenUrlSilentWindows(const std::string &utf8Url) {
   sei.nShow = SW_SHOWNORMAL;
   return ShellExecuteExW(&sei) != FALSE;
 }
-
-static bool launchPowerShellHiddenWindows(const wchar_t *parameters) {
-  wchar_t sysDir[MAX_PATH] = {};
-  const UINT sysLen = GetSystemDirectoryW(sysDir, MAX_PATH);
-  if (sysLen == 0 || sysLen >= MAX_PATH) {
-    return false;
-  }
-  std::wstring exePath =
-      std::wstring(sysDir) + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
-  std::wstring commandLine = L"\"" + exePath + L"\" " + parameters;
-
-  STARTUPINFOW startupInfo = {};
-  startupInfo.cb = sizeof(startupInfo);
-  startupInfo.dwFlags = STARTF_USESHOWWINDOW;
-  startupInfo.wShowWindow = SW_HIDE;
-
-  PROCESS_INFORMATION processInfo = {};
-  const BOOL created = CreateProcessW(
-      exePath.c_str(), &commandLine[0], nullptr, nullptr, FALSE,
-      CREATE_NO_WINDOW, nullptr, nullptr, &startupInfo, &processInfo);
-  if (!created) {
-    return false;
-  }
-  CloseHandle(processInfo.hThread);
-  CloseHandle(processInfo.hProcess);
-  return true;
-}
 #else
 static bool spawnXdgOpenLinux(const char *url) {
   posix_spawn_file_actions_t actions;
@@ -392,9 +365,14 @@ static void openMCNexusApp() {
 #elif defined(_WIN32)
   auto shellExecuteWindowsPath = [](const wchar_t *path,
                                     const wchar_t *parameters) {
-    HINSTANCE result = ShellExecuteW(nullptr, L"open", path, parameters,
-                                     nullptr, SW_SHOWNORMAL);
-    return reinterpret_cast<intptr_t>(result) > 32;
+    SHELLEXECUTEINFOW sei = {};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_FLAG_NO_UI;
+    sei.lpVerb = L"open";
+    sei.lpFile = path;
+    sei.lpParameters = parameters;
+    sei.nShow = SW_SHOWNORMAL;
+    return ShellExecuteExW(&sei) != FALSE;
   };
 
   auto launchWindowsExecutableIfExists =
@@ -419,12 +397,6 @@ static void openMCNexusApp() {
           L"%ProgramFiles(x86)%\\MCNexus\\MCNexus.exe") ||
       launchWindowsExecutableIfExists(
           L"%LocalAppData%\\Programs\\MCNexus\\MCNexus.exe")) {
-    return;
-  }
-
-  constexpr const wchar_t *kPowerShellArgs =
-      LR"PS(-NoProfile -WindowStyle Hidden -Command "$app = Get-StartApps | Where-Object { $_.Name -eq 'MCNexus' } | Select-Object -First 1; if ($app) { Start-Process ('shell:AppsFolder\' + $app.AppID) } else { Start-Process 'https://apps.microsoft.com/detail/9n1qqt1xc825?hl=en-US&gl=US' }")PS";
-  if (launchPowerShellHiddenWindows(kPowerShellArgs)) {
     return;
   }
 
