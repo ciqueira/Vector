@@ -675,6 +675,13 @@ inline float3 applySplitTone(float3 in, const MCVectorParams &p) {
   return out;
 }
 
+inline bool splitToneIsIdentity(const MCVectorParams &p) {
+  return std::fabs(p.splitShadow) <= 1.0e-6f &&
+         std::fabs(p.splitHighlight) <= 1.0e-6f &&
+         std::fabs(p.shadowCurveBias) <= 1.0e-6f &&
+         std::fabs(p.highlightCurveBias) <= 1.0e-6f;
+}
+
 inline bool curvesSaturationIsIdentity(const MCVectorParams &p) {
   return p.satLumMask <= 1.0e-6f ||
          (std::fabs(p.satLow - 1.0f) <= 1.0e-6f &&
@@ -687,8 +694,20 @@ inline bool zoneSaturationIsIdentity(const MCVectorParams &p) {
   return std::fabs(p.zoneHighlightSaturation) <= 1.0e-6f;
 }
 
+inline bool vectorIsIdentity(const MCVectorParams &p) {
+  const bool splitIdentity = !p.enableSplitTone || splitToneIsIdentity(p);
+  const bool satIdentity = !p.enableSaturation || curvesSaturationIsIdentity(p);
+  const bool zoneIdentity =
+      !p.enableZoneSaturation || zoneSaturationIsIdentity(p);
+  const bool noOverlays = !(p.enableSaturation && p.showSatCurve) &&
+                          !(p.enableSplitTone && p.showToneCurve) &&
+                          !(p.enableZoneSaturation && p.showZoneCurve);
+  return splitIdentity && satIdentity && zoneIdentity && noOverlays;
+}
+
 inline float3 applyVector(float3 in, const MCVectorParams &p) {
-  const float3 base = p.enableSplitTone ? applySplitTone(in, p) : in;
+  const float3 base =
+      p.enableSplitTone && !splitToneIsIdentity(p) ? applySplitTone(in, p) : in;
   const float3 sat =
       p.enableSaturation && !curvesSaturationIsIdentity(p)
           ? applyCurvesSaturation(base, p)

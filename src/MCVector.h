@@ -9,11 +9,11 @@
 class MCVectorFactory : public OFX::PluginFactoryHelper<MCVectorFactory> {
 public:
   MCVectorFactory();
-  virtual void load() {}
-  virtual void unload() {}
-  virtual void describe(OFX::ImageEffectDescriptor &desc);
+  virtual void load() override {}
+  virtual void unload() override;
+  virtual void describe(OFX::ImageEffectDescriptor &desc) override;
   virtual void describeInContext(OFX::ImageEffectDescriptor &desc,
-                                 OFX::ContextEnum context);
+                                 OFX::ContextEnum context) override;
   virtual OFX::ImageEffect *createInstance(OfxImageEffectHandle handle,
-                                           OFX::ContextEnum context);
+                                           OFX::ContextEnum context) override;
 };

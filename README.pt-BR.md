@@ -2,8 +2,8 @@
 
 [English](README.md)
 
-Vector reuni ferramentas para desenvolvimento de look com operações de split tone
-e saturação organizadas em um única OFX. O foco é concentrar ajustes
+Vector reúne ferramentas para desenvolvimento de look com operações de split tone
+e saturação organizadas em uma única OFX. O foco é concentrar ajustes
 relacionados, manter o sinal RGB de entrada como referência e reduzir a
 necessidade de empilhar várias ferramentas pequenas para o mesmo tipo de
 correção.
@@ -17,6 +17,11 @@ Vector é distribuído pelo [MCNexus](https://mcnexus.app). O
 Nexus fornece distribuição, licenciamento, entrega de atualizações e suporte ao
 produto. O MCNexus é o aplicativo desktop usado para ativar, instalar,
 atualizar e gerenciar o plugin.
+
+> **Novo · Controle nativo via MIDI:** os sliders do Vector podem ser ajustados
+> com controladora MIDI via MCNexus como Hub, sem mouse, mapeamento manual ou
+> dependência de resolução de tela. Conecte a controladora e abra o MCNexus.
+> Veja os detalhes em [Controle nativo via MIDI](#controle-nativo-via-midi).
 
 ## Plugins Incluídos
 
@@ -105,6 +110,34 @@ A licença gratuita permite uma ativação por vez.
 
 Perda de chave: o mesmo link de solicitação, aberto com a mesma conta GitHub,
 recupera a licença já emitida.
+
+## Controle nativo via MIDI
+
+Os sliders do Vector podem ser controlados por hardware MIDI via MCNexus como
+Hub, sem uso de mouse, mapeamento manual, dependência de resolução de tela ou
+permissões de Acessibilidade. Conecte a controladora e abra o MCNexus.
+
+- **Foco no node:** atua somente quando o node do Vector está selecionado no
+  Inspector, sem enviar comandos em nodes nativos (requer DaVinci Resolve
+  Studio).
+- **Bancos e paginação:** acesso a todos os parâmetros pelos bancos da
+  controladora e por bancos virtuais para modelos com menos knobs.
+- **Curva de sensibilidade:** resposta adaptativa à velocidade de giro do knob,
+  com escala proporcional ao intervalo de cada parâmetro, ajuste fino em
+  movimentos lentos e retorno imediato ao inverter a direção.
+- **Reset e Undo:** clique no knob para retornar o parâmetro ao padrão; ajustes
+  contínuos são agrupados no histórico de Undo do Resolve.
+
+### NexControl MIDI HUB
+
+- **Controladoras compatíveis:** perfis embutidos para Midi Fighter Twister e
+  Behringer X-TOUCH MINI, perfis adicionais para download e detecção automática
+  para modelos genéricos.
+- **Portas e controle:** seleção ou liberação individual de portas MIDI e pausa
+  do hub pela barra de menus (macOS) ou systray (Windows).
+
+Detalhes de implementação, outros modelos e perfis estão na
+[documentação do NexControl](https://mcnexus.app/pt-BR/docs/developers/midi/).
 
 ## Apoie o Projeto
 

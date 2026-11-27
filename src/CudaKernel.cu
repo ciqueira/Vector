@@ -636,6 +636,13 @@ __device__ inline float3 applySplitTone(float3 in, MCVectorParams p) {
                              highlightMix, neutralWhite, p.highlightCurveBias);
 }
 
+__device__ inline bool splitToneIsIdentity(MCVectorParams p) {
+  return fabsf(p.splitShadow) <= 1.0e-6f &&
+         fabsf(p.splitHighlight) <= 1.0e-6f &&
+         fabsf(p.shadowCurveBias) <= 1.0e-6f &&
+         fabsf(p.highlightCurveBias) <= 1.0e-6f;
+}
+
 __device__ inline bool curvesSaturationIsIdentity(MCVectorParams p) {
   return p.satLumMask <= 1.0e-6f ||
          (fabsf(p.satLow - 1.0f) <= 1.0e-6f &&
@@ -648,8 +655,20 @@ __device__ inline bool zoneSaturationIsIdentity(MCVectorParams p) {
   return fabsf(p.zoneHighlightSaturation) <= 1.0e-6f;
 }
 
+__device__ inline bool vectorIsIdentity(MCVectorParams p) {
+  const bool splitIdentity = !p.enableSplitTone || splitToneIsIdentity(p);
+  const bool satIdentity = !p.enableSaturation || curvesSaturationIsIdentity(p);
+  const bool zoneIdentity =
+      !p.enableZoneSaturation || zoneSaturationIsIdentity(p);
+  const bool noOverlays = !(p.enableSaturation && p.showSatCurve) &&
+                          !(p.enableSplitTone && p.showToneCurve) &&
+                          !(p.enableZoneSaturation && p.showZoneCurve);
+  return splitIdentity && satIdentity && zoneIdentity && noOverlays;
+}
+
 __device__ inline float3 applyVector(float3 in, MCVectorParams p) {
-  const float3 base = p.enableSplitTone ? applySplitTone(in, p) : in;
+  const float3 base =
+      p.enableSplitTone && !splitToneIsIdentity(p) ? applySplitTone(in, p) : in;
   const float3 sat =
       p.enableSaturation && !curvesSaturationIsIdentity(p)
           ? applyCurvesSaturation(base, p)
@@ -1026,20 +1045,37 @@ __device__ inline float3 drawToneCurve(float3 out, int x, int y, int width,
                           highlightColor, overlayAlpha);
 }
 
-__global__ void MCVectorKernel(int width, int height, int srcRowBytes,
-                               int dstRowBytes, int inputPremultiplied,
-                               int outputPremultiplied, const float *input,
-                               float *output,
-                               MCVectorParams params) {
-  const int x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int y = blockIdx.y * blockDim.y + threadIdx.y;
-  if (x >= width || y >= height)
+__global__ void MCVectorKernel(
+    int renderX1, int renderY1, int renderWidth, int renderHeight,
+    int srcBoundsX1, int srcBoundsY1, int imgWidth, int imgHeight,
+    int dstBoundsX1, int dstBoundsY1, int srcRowBytes, int dstRowBytes,
+    int inputPremultiplied, int outputPremultiplied, const float *input,
+    float *output, MCVectorParams params) {
+  const int rx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int ry = blockIdx.y * blockDim.y + threadIdx.y;
+  if (rx >= renderWidth || ry >= renderHeight)
     return;
+
+  const int worldX = renderX1 + rx;
+  const int worldY = renderY1 + ry;
+  const int srcX = worldX - srcBoundsX1;
+  const int srcY = worldY - srcBoundsY1;
+  const int dstX = worldX - dstBoundsX1;
+  const int dstY = worldY - dstBoundsY1;
 
   const int srcFpr = srcRowBytes / (int)sizeof(float);
   const int dstFpr = dstRowBytes / (int)sizeof(float);
-  const int srcIdx = y * srcFpr + x * 4;
-  const int dstIdx = y * dstFpr + x * 4;
+  const int srcIdx = srcY * srcFpr + srcX * 4;
+  const int dstIdx = dstY * dstFpr + dstX * 4;
+
+  if (vectorIsIdentity(params) && inputPremultiplied == outputPremultiplied) {
+    output[dstIdx + 0] = input[srcIdx + 0];
+    output[dstIdx + 1] = input[srcIdx + 1];
+    output[dstIdx + 2] = input[srcIdx + 2];
+    output[dstIdx + 3] = input[srcIdx + 3];
+    return;
+  }
+
   const float alpha = input[srcIdx + 3];
   float3 in = f3(input[srcIdx + 0], input[srcIdx + 1], input[srcIdx + 2]);
   if (inputPremultiplied != 0) {
@@ -1054,9 +1090,12 @@ __global__ void MCVectorKernel(int width, int height, int srcRowBytes,
 
   float3 out = applyVector(in, params);
   float overlayAlpha = 0.0f;
-  out = drawToneCurve(out, x, y, width, height, params, &overlayAlpha);
-  out = drawSatCurve(out, x, y, width, height, params, &overlayAlpha);
-  out = drawZoneCurve(out, x, y, width, height, params, &overlayAlpha);
+  out = drawToneCurve(out, srcX, srcY, imgWidth, imgHeight, params,
+                      &overlayAlpha);
+  out = drawSatCurve(out, srcX, srcY, imgWidth, imgHeight, params,
+                     &overlayAlpha);
+  out = drawZoneCurve(out, srcX, srcY, imgWidth, imgHeight, params,
+                      &overlayAlpha);
 
   const float outputAlpha = fmaxf(alpha, overlayAlpha);
   if (outputPremultiplied != 0) {
@@ -1071,16 +1110,37 @@ __global__ void MCVectorKernel(int width, int height, int srcRowBytes,
   output[dstIdx + 3] = outputAlpha;
 }
 
-extern "C" void RunCudaKernel(void *stream, int width, int height,
-                              int srcRowBytes, int dstRowBytes,
-                              int inputPremultiplied, int outputPremultiplied,
-                              const float *input, float *output,
-                              MCVectorParams params) {
+extern "C" bool RunCudaKernel(
+    void *stream, int renderX1, int renderY1, int renderWidth, int renderHeight,
+    int srcBoundsX1, int srcBoundsY1, int imgWidth, int imgHeight,
+    int dstBoundsX1, int dstBoundsY1, int srcRowBytes, int dstRowBytes,
+    int inputPremultiplied, int outputPremultiplied, const float *input,
+    float *output, MCVectorParams params) {
+  if (!input || !output || renderWidth <= 0 || renderHeight <= 0 ||
+      imgWidth <= 0 || imgHeight <= 0 || srcRowBytes <= 0 ||
+      dstRowBytes <= 0 ||
+      (srcRowBytes % static_cast<int>(sizeof(float))) != 0 ||
+      (dstRowBytes % static_cast<int>(sizeof(float))) != 0) {
+    return false;
+  }
+
+  const int srcMaxX = renderX1 + renderWidth - srcBoundsX1;
+  const int dstMaxX = renderX1 + renderWidth - dstBoundsX1;
+  if (renderX1 < srcBoundsX1 || renderY1 < srcBoundsY1 ||
+      renderX1 < dstBoundsX1 || renderY1 < dstBoundsY1 ||
+      srcMaxX > imgWidth ||
+      srcRowBytes < srcMaxX * 4 * static_cast<int>(sizeof(float)) ||
+      dstRowBytes < dstMaxX * 4 * static_cast<int>(sizeof(float))) {
+    return false;
+  }
+
   cudaStream_t cudaStream = (cudaStream_t)stream;
   dim3 block(16, 16);
-  dim3 grid((width + block.x - 1) / block.x,
-            (height + block.y - 1) / block.y);
+  dim3 grid((renderWidth + block.x - 1) / block.x,
+            (renderHeight + block.y - 1) / block.y);
   MCVectorKernel<<<grid, block, 0, cudaStream>>>(
-      width, height, srcRowBytes, dstRowBytes, inputPremultiplied,
-      outputPremultiplied, input, output, params);
+      renderX1, renderY1, renderWidth, renderHeight, srcBoundsX1, srcBoundsY1,
+      imgWidth, imgHeight, dstBoundsX1, dstBoundsY1, srcRowBytes, dstRowBytes,
+      inputPremultiplied, outputPremultiplied, input, output, params);
+  return cudaGetLastError() == cudaSuccess;
 }

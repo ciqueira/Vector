@@ -7,6 +7,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <mutex>
 #include <unordered_map>
@@ -617,6 +618,13 @@ float3 applySplitTone(float3 in, constant MCVectorParams &p) {
                              p.highlightCurveBias);
 }
 
+bool splitToneIsIdentity(constant MCVectorParams &p) {
+  return abs(p.splitShadow) <= 1.0e-6f &&
+         abs(p.splitHighlight) <= 1.0e-6f &&
+         abs(p.shadowCurveBias) <= 1.0e-6f &&
+         abs(p.highlightCurveBias) <= 1.0e-6f;
+}
+
 bool curvesSaturationIsIdentity(constant MCVectorParams &p) {
   return p.satLumMask <= 1.0e-6f ||
          (abs(p.satLow - 1.0f) <= 1.0e-6f &&
@@ -629,8 +637,21 @@ bool zoneSaturationIsIdentity(constant MCVectorParams &p) {
   return abs(p.zoneHighlightSaturation) <= 1.0e-6f;
 }
 
+bool vectorIsIdentity(constant MCVectorParams &p) {
+  bool splitIdentity = p.enableSplitTone == 0 || splitToneIsIdentity(p);
+  bool satIdentity = p.enableSaturation == 0 || curvesSaturationIsIdentity(p);
+  bool zoneIdentity =
+      p.enableZoneSaturation == 0 || zoneSaturationIsIdentity(p);
+  bool noOverlays = !(p.enableSaturation != 0 && p.showSatCurve != 0) &&
+                    !(p.enableSplitTone != 0 && p.showToneCurve != 0) &&
+                    !(p.enableZoneSaturation != 0 && p.showZoneCurve != 0);
+  return splitIdentity && satIdentity && zoneIdentity && noOverlays;
+}
+
 float3 applyVector(float3 in, constant MCVectorParams &p) {
-  float3 base = p.enableSplitTone != 0 ? applySplitTone(in, p) : in;
+  float3 base = p.enableSplitTone != 0 && !splitToneIsIdentity(p)
+                    ? applySplitTone(in, p)
+                    : in;
   float3 sat =
       p.enableSaturation != 0 && !curvesSaturationIsIdentity(p)
           ? applyCurvesSaturation(base, p)
@@ -983,21 +1004,45 @@ float3 drawToneCurve(float3 out, uint x, uint y, uint width, uint height,
                           highlightColor, overlayAlpha);
 }
 
-kernel void MCVectorKernel(constant int &width [[ buffer(0) ]],
-                           constant int &height [[ buffer(1) ]],
-                           constant int &srcRowBytes [[ buffer(2) ]],
-                           constant int &dstRowBytes [[ buffer(3) ]],
-                           constant int &inputPremultiplied [[ buffer(4) ]],
-                           constant int &outputPremultiplied [[ buffer(5) ]],
-                           constant MCVectorParams &params [[ buffer(6) ]],
-                           const device float *input [[ buffer(7) ]],
-                           device float *output [[ buffer(8) ]],
+kernel void MCVectorKernel(constant int &renderX1 [[ buffer(0) ]],
+                           constant int &renderY1 [[ buffer(1) ]],
+                           constant int &renderWidth [[ buffer(2) ]],
+                           constant int &renderHeight [[ buffer(3) ]],
+                           constant int &srcBoundsX1 [[ buffer(4) ]],
+                           constant int &srcBoundsY1 [[ buffer(5) ]],
+                           constant int &imgWidth [[ buffer(6) ]],
+                           constant int &imgHeight [[ buffer(7) ]],
+                           constant int &dstBoundsX1 [[ buffer(8) ]],
+                           constant int &dstBoundsY1 [[ buffer(9) ]],
+                           constant int &srcRowBytes [[ buffer(10) ]],
+                           constant int &dstRowBytes [[ buffer(11) ]],
+                           constant int &inputPremultiplied [[ buffer(12) ]],
+                           constant int &outputPremultiplied [[ buffer(13) ]],
+                           constant MCVectorParams &params [[ buffer(14) ]],
+                           const device float *input [[ buffer(15) ]],
+                           device float *output [[ buffer(16) ]],
                            uint2 id [[ thread_position_in_grid ]]) {
-  if (id.x >= (uint)width || id.y >= (uint)height) return;
+  if (id.x >= (uint)renderWidth || id.y >= (uint)renderHeight) return;
+
+  int worldX = renderX1 + int(id.x);
+  int worldY = renderY1 + int(id.y);
+  int srcX = worldX - srcBoundsX1;
+  int srcY = worldY - srcBoundsY1;
+  int dstX = worldX - dstBoundsX1;
+  int dstY = worldY - dstBoundsY1;
+
   int srcFpr = srcRowBytes / int(sizeof(float));
   int dstFpr = dstRowBytes / int(sizeof(float));
-  int srcIdx = int(id.y) * srcFpr + int(id.x) * 4;
-  int dstIdx = int(id.y) * dstFpr + int(id.x) * 4;
+  int srcIdx = srcY * srcFpr + srcX * 4;
+  int dstIdx = dstY * dstFpr + dstX * 4;
+
+  if (vectorIsIdentity(params) && inputPremultiplied == outputPremultiplied) {
+    output[dstIdx + 0] = input[srcIdx + 0];
+    output[dstIdx + 1] = input[srcIdx + 1];
+    output[dstIdx + 2] = input[srcIdx + 2];
+    output[dstIdx + 3] = input[srcIdx + 3];
+    return;
+  }
 
   float alpha = input[srcIdx + 3];
   float3 in =
@@ -1012,12 +1057,12 @@ kernel void MCVectorKernel(constant int &width [[ buffer(0) ]],
 
   float3 out = applyVector(in, params);
   float overlayAlpha = 0.0f;
-  out = drawToneCurve(out, id.x, id.y, uint(width), uint(height), params,
-                      &overlayAlpha);
-  out = drawSatCurve(out, id.x, id.y, uint(width), uint(height), params,
-                     &overlayAlpha);
-  out = drawZoneCurve(out, id.x, id.y, uint(width), uint(height), params,
-                      &overlayAlpha);
+  out = drawToneCurve(out, uint(srcX), uint(srcY), uint(imgWidth),
+                      uint(imgHeight), params, &overlayAlpha);
+  out = drawSatCurve(out, uint(srcX), uint(srcY), uint(imgWidth),
+                     uint(imgHeight), params, &overlayAlpha);
+  out = drawZoneCurve(out, uint(srcX), uint(srcY), uint(imgWidth),
+                      uint(imgHeight), params, &overlayAlpha);
 
   float outputAlpha = max(alpha, overlayAlpha);
   if (outputPremultiplied != 0) out *= outputAlpha;
@@ -1030,35 +1075,61 @@ kernel void MCVectorKernel(constant int &width [[ buffer(0) ]],
 )METAL";
 
 static std::mutex s_Mutex;
-static std::unordered_map<id<MTLCommandQueue>, id<MTLComputePipelineState>>
-    s_PipelineMap;
+static std::unordered_map<uint64_t, id<MTLComputePipelineState>> s_PipelineMap;
 
-extern "C" void RunMetalKernel(void *commandQueue, int width, int height,
-                               int srcRowBytes, int dstRowBytes,
-                               int inputPremultiplied, int outputPremultiplied,
-                               const float *input, float *output,
-                               MCVectorParams params) {
+extern "C" bool RunMetalKernel(
+    void *commandQueue, int renderX1, int renderY1, int renderWidth,
+    int renderHeight, int srcBoundsX1, int srcBoundsY1, int imgWidth,
+    int imgHeight, int dstBoundsX1, int dstBoundsY1, int srcRowBytes,
+    int dstRowBytes, int inputPremultiplied, int outputPremultiplied,
+    const float *input, float *output, MCVectorParams params) {
+  if (!commandQueue || !input || !output || renderWidth <= 0 ||
+      renderHeight <= 0 || imgWidth <= 0 || imgHeight <= 0 ||
+      srcRowBytes <= 0 || dstRowBytes <= 0 ||
+      (srcRowBytes % static_cast<int>(sizeof(float))) != 0 ||
+      (dstRowBytes % static_cast<int>(sizeof(float))) != 0) {
+    return false;
+  }
+
+  const int srcMaxX = renderX1 + renderWidth - srcBoundsX1;
+  const int dstMaxX = renderX1 + renderWidth - dstBoundsX1;
+  if (renderX1 < srcBoundsX1 || renderY1 < srcBoundsY1 ||
+      renderX1 < dstBoundsX1 || renderY1 < dstBoundsY1 ||
+      srcMaxX > imgWidth ||
+      srcRowBytes < srcMaxX * 4 * static_cast<int>(sizeof(float)) ||
+      dstRowBytes < dstMaxX * 4 * static_cast<int>(sizeof(float))) {
+    return false;
+  }
+
   @autoreleasepool {
     id<MTLCommandQueue> queue = static_cast<id<MTLCommandQueue>>(commandQueue);
-    if (!queue) {
-      return;
+    id<MTLDevice> device = queue.device;
+    if (!device) {
+      return false;
     }
 
-    id<MTLDevice> device = queue.device;
+    const uint64_t deviceKey = device.registryID;
     id<MTLComputePipelineState> pipelineState = nil;
     {
       std::lock_guard<std::mutex> lock(s_Mutex);
-      auto it = s_PipelineMap.find(queue);
+      auto it = s_PipelineMap.find(deviceKey);
       if (it != s_PipelineMap.end()) {
         pipelineState = it->second;
       } else {
         NSError *err = nil;
         MTLCompileOptions *options = [[MTLCompileOptions alloc] init];
+        // RGB Spherical identifies the neutral axis through cancellation
+        // (2R-G-B and G-B). Fast-math reassociation can destroy that
+        // cancellation and turn neutral pixels into false chroma.
 #if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
-        options.mathMode = MTLMathModeFast;
-#else
-        options.fastMathEnabled = YES;
+        if (@available(macOS 15.0, *)) {
+          options.mathMode = MTLMathModeSafe;
+        }
 #endif
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        options.fastMathEnabled = NO;
+#pragma clang diagnostic pop
 
         id<MTLLibrary> library =
             [device newLibraryWithSource:@(kMetalSource)
@@ -1068,14 +1139,14 @@ extern "C" void RunMetalKernel(void *commandQueue, int width, int height,
         if (!library) {
           fprintf(stderr, "[MCVector] Metal compile error: %s\n",
                   err.localizedDescription.UTF8String);
-          return;
+          return false;
         }
 
         id<MTLFunction> fn = [library newFunctionWithName:@"MCVectorKernel"];
         [library release];
         if (!fn) {
           fprintf(stderr, "[MCVector] Metal function MCVectorKernel not found\n");
-          return;
+          return false;
         }
 
         pipelineState = [device newComputePipelineStateWithFunction:fn
@@ -1084,9 +1155,9 @@ extern "C" void RunMetalKernel(void *commandQueue, int width, int height,
         if (!pipelineState) {
           fprintf(stderr, "[MCVector] Metal pipeline error: %s\n",
                   err.localizedDescription.UTF8String);
-          return;
+          return false;
         }
-        s_PipelineMap[queue] = pipelineState;
+        s_PipelineMap[deviceKey] = pipelineState;
       }
     }
 
@@ -1096,27 +1167,46 @@ extern "C" void RunMetalKernel(void *commandQueue, int width, int height,
 
     id<MTLCommandBuffer> cmdBuf = [queue commandBuffer];
     id<MTLComputeCommandEncoder> encoder = [cmdBuf computeCommandEncoder];
+    if (!cmdBuf || !encoder) {
+      return false;
+    }
+
     [encoder setComputePipelineState:pipelineState];
-    [encoder setBytes:&width length:sizeof(int) atIndex:0];
-    [encoder setBytes:&height length:sizeof(int) atIndex:1];
-    [encoder setBytes:&srcRowBytes length:sizeof(int) atIndex:2];
-    [encoder setBytes:&dstRowBytes length:sizeof(int) atIndex:3];
-    [encoder setBytes:&inputPremultiplied length:sizeof(int) atIndex:4];
-    [encoder setBytes:&outputPremultiplied length:sizeof(int) atIndex:5];
-    [encoder setBytes:&params length:sizeof(MCVectorParams) atIndex:6];
-    [encoder setBuffer:srcBuf offset:0 atIndex:7];
-    [encoder setBuffer:dstBuf offset:0 atIndex:8];
+    [encoder setBytes:&renderX1 length:sizeof(int) atIndex:0];
+    [encoder setBytes:&renderY1 length:sizeof(int) atIndex:1];
+    [encoder setBytes:&renderWidth length:sizeof(int) atIndex:2];
+    [encoder setBytes:&renderHeight length:sizeof(int) atIndex:3];
+    [encoder setBytes:&srcBoundsX1 length:sizeof(int) atIndex:4];
+    [encoder setBytes:&srcBoundsY1 length:sizeof(int) atIndex:5];
+    [encoder setBytes:&imgWidth length:sizeof(int) atIndex:6];
+    [encoder setBytes:&imgHeight length:sizeof(int) atIndex:7];
+    [encoder setBytes:&dstBoundsX1 length:sizeof(int) atIndex:8];
+    [encoder setBytes:&dstBoundsY1 length:sizeof(int) atIndex:9];
+    [encoder setBytes:&srcRowBytes length:sizeof(int) atIndex:10];
+    [encoder setBytes:&dstRowBytes length:sizeof(int) atIndex:11];
+    [encoder setBytes:&inputPremultiplied length:sizeof(int) atIndex:12];
+    [encoder setBytes:&outputPremultiplied length:sizeof(int) atIndex:13];
+    [encoder setBytes:&params length:sizeof(MCVectorParams) atIndex:14];
+    [encoder setBuffer:srcBuf offset:0 atIndex:15];
+    [encoder setBuffer:dstBuf offset:0 atIndex:16];
 
     NSUInteger exeWidth = pipelineState.threadExecutionWidth;
     NSUInteger maxHeight = pipelineState.maxTotalThreadsPerThreadgroup / exeWidth;
     MTLSize threadsPerGroup = MTLSizeMake(exeWidth, maxHeight, 1);
     MTLSize threadgroups =
-        MTLSizeMake(((NSUInteger)width + exeWidth - 1) / exeWidth,
-                    ((NSUInteger)height + maxHeight - 1) / maxHeight, 1);
+        MTLSizeMake(((NSUInteger)renderWidth + exeWidth - 1) / exeWidth,
+                    ((NSUInteger)renderHeight + maxHeight - 1) / maxHeight, 1);
 
     [encoder dispatchThreadgroups:threadgroups
             threadsPerThreadgroup:threadsPerGroup];
     [encoder endEncoding];
     [cmdBuf commit];
+    [cmdBuf waitUntilCompleted];
+    if (cmdBuf.status == MTLCommandBufferStatusError) {
+      fprintf(stderr, "[MCVector] Metal command error: %s\n",
+              cmdBuf.error.localizedDescription.UTF8String);
+      return false;
+    }
+    return cmdBuf.status == MTLCommandBufferStatusCompleted;
   }
 }
