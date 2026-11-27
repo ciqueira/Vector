@@ -6,3 +6,4 @@
 *.ofx.bundle/
 .DS_Store
 ._*
+.token-savior-cache.json
